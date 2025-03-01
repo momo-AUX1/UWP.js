@@ -19,6 +19,17 @@ UWP.js lets you run web apps inside a UWP (Universal Windows Platform) environme
 
 ---
 
+| Windows | Xbox | Mobile |
+|---------|------|--------|
+| ![Windows img](https://raw.githubusercontent.com/momo-AUX1/UWP.js/refs/heads/main/githubimg/pc.png) | ![Xbox img](https://raw.githubusercontent.com/momo-AUX1/UWP.js/refs/heads/main/githubimg/xbox.png) | ![Mobile img](https://raw.githubusercontent.com/momo-AUX1/UWP.js/refs/heads/main/githubimg/mobile.png) |
+| [capacitor-xbox](https://www.npmjs.com/package/capacitor-xbox) | [capacitor-xbox](https://www.npmjs.com/package/capacitor-xbox) | [capacitorJS](https://capacitorjs.com) |
+
+## Add UWP Support to Your Project
+
+If you want to add UWP support to an existing project, go see [Capacitor Xbox](https://www.npmjs.com/package/capacitor-xbox).
+
+---
+
 ## Why UWP.js?
 
 - **Seamless Web-to-Native Integration:**  
