@@ -31,7 +31,7 @@ UWP.js lets you run web apps inside a UWP (Universal Windows Platform) environme
   Add custom native functionalities effortlessly by extending the C# backend.
 
 - **Cross-Platform Support:**  
-  Supports Windows Desktop, Xbox, HoloLens, and Windows Phone.
+  Supports Windows Desktop and Xbox.
 
 - **Python CLI Included:**  
   Streamline project initialization, asset synchronization, and configuration with an intuitive Python CLI.
@@ -59,7 +59,7 @@ UWP.js lets you run web apps inside a UWP (Universal Windows Platform) environme
 
 ### Capacitor Xbox
 - **Seamless Integration:** Mirror Capacitor APIs for multi-platform deployment.
-- **Cross-Platform Support:** Runs on Xbox, Windows, HoloLens, and Windows Phone.
+- **Cross-Platform Support:** Runs on Xbox and Windows.
 - **Minimal Code Changes:** Use the same Capacitor methods you're already familiar with.
 
 ---
