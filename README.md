@@ -30,6 +30,11 @@ If you want to add UWP support to an existing project, go see [Capacitor Xbox](h
 
 ---
 
+### Disclaimer
+Capacitor Xbox and UWP.js are in no way affiliated with Capacitor, Ionic, or Microsoft. This is a personal project intended solely to assist developers in the creation and porting of web applications and games to Xbox/Windows platforms.
+
+---
+
 ## Why UWP.js?
 
 - **Seamless Web-to-Native Integration:**  
