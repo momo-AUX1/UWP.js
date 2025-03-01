@@ -30,6 +30,7 @@ namespace UWP.js
         {
             this.InitializeComponent();
             this.Suspending += OnSuspending;
+            //this.RequiresPointerMode = ApplicationRequiresPointerMode.WhenRequested; Permanently disable mouse mode useful for games.
         }
 
         /// <summary>
