@@ -351,7 +351,7 @@ def main():
         print(Fore.RED + "❌ No command provided. Use help or -h for help.")
         sys.exit(1)
 
-    if len(args) > 3:
+    if len(args) > 4:
         print(Fore.RED + "❌ Too many arguments provided. Use help or -h for help.")
         sys.exit(1)
 
