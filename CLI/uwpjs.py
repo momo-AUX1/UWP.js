@@ -10,6 +10,8 @@ import wget
 import shutil
 from PIL import Image
 import secrets
+import platform
+import subprocess
 from colorama import Fore, Style
 
 colorama.init(autoreset=True)
@@ -20,6 +22,7 @@ spaDATA = None
 capDATA = None
 current_web_dir = None
 resources_dir = None
+patch_wasm = False
 __version__ = "0.0.1"
 __author__ = "momo-AUX1"
 
@@ -159,6 +162,31 @@ def initialize_uwpjs():
     replace_in_files(project_name, "4e34859b-2064-4d01-a9c6-f43ce8241ecd", f"{secrets.token_hex(4)}-{secrets.token_hex(2)}-{secrets.token_hex(2)}-{secrets.token_hex(2)}-{secrets.token_hex(6)}")
 
     print(Fore.GREEN + "✅ Initialization complete! Run sync next to prepare your UWP.js project.")
+
+def rename_wasm_files(project_name):
+    project_dir = os.path.join("uwp", project_name)
+    for root, dirs, files in os.walk(project_dir):
+        for file in files:
+            if file.endswith('.wasm'):
+                old_path = os.path.join(root, file)
+                new_file = file[:-5] + ".txt"
+                new_path = os.path.join(root, new_file)
+                os.rename(old_path, new_path)
+                print(Fore.MAGENTA + f"Renamed: {old_path} -> {new_path}")
+                for sub_root, sub_dirs, sub_files in os.walk(project_dir):
+                    for sub_file in sub_files:
+                        sub_file_path = os.path.join(sub_root, sub_file)
+                        try:
+                            with open(sub_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                        except Exception:
+                            continue  
+                        
+                        if file in content:
+                            new_content = content.replace(file, new_file)
+                            with open(sub_file_path, 'w', encoding='utf-8', errors='ignore') as f:
+                                f.write(new_content)
+                            print(Fore.MAGENTA + f"Updated reference in {sub_file_path}: {file} -> {new_file}")
 
 def sync_project():
     try:
@@ -308,10 +336,16 @@ def sync_project():
 
     else:
         print(Fore.YELLOW + "⚠️  Resources directory not found or not specified. No images synced.")
+    
+    if patch_wasm:
+        print(Fore.GREEN + "🔄 Patching WASM files...")
+        rename_wasm_files(project_name)
 
     print(Fore.GREEN + f"✅ Sync complete! Your UWP.js project '{project_name}' is now up-to-date.")
 
 def main():
+    global patch_wasm
+
     args = sys.argv
     if len(args) < 2:
         print(Fore.RED + "❌ No command provided. Use help or -h for help.")
@@ -322,12 +356,34 @@ def main():
         sys.exit(1)
 
     cmd = args[1]
+    modifier = args[2] if len(args) > 2 else None
 
     if cmd in ["help", "-h"]:
         print(Fore.CYAN + "ℹ️  Available commands:")
         print(Fore.CYAN + "   init, -i   : Initialize UWP.js for your project")
         print(Fore.CYAN + "   sync, -s   : Sync your project build and images to UWP.js environment")
+        print(Fore.CYAN + "   open, -o   : Open the UWP.js project in Visual Studio")
         sys.exit(0)
+
+    
+    if cmd in ["open", "-o"]:
+        if not os.path.exists("uwp_js.config.json"):
+            print(Fore.RED + "❌ UWPJS project not initialized. exiting...")
+            sys.exit(1)
+        with open("uwp_js.config.json", "r", encoding="utf-8") as f:
+           data = json.loads(f.read())
+        match platform.system():
+            case "Darwin":
+                subprocess.run(["open", f"uwp/{data['name']}.sln"], check=True)
+            case "Linux":
+                subprocess.run(["xdg-open", f"uwp/{data['name']}.sln"], check=True)
+            case "Windows":
+                subprocess.run(["start", f"uwp/{data['name']}.sln"], shell=True, check=True)
+            case _:
+                print(Fore.RED + "❌ Unsupported platform. Please open the solution manually.")
+                sys.exit(1)
+        sys.exit(0)
+    
 
     if cmd in ["init", "-i"]:
         if os.path.exists("uwp_js.config.json"):
@@ -345,6 +401,8 @@ def main():
             print(Fore.RED + "❌ UWPJS project not initialized. exiting...")
             sys.exit(1)
         print(Fore.BLUE + "🔄 Syncing UWPjs project...")
+        if modifier == "--patch-wasm":
+            patch_wasm = True
         sync_project()
     else:
         print(Fore.RED + f"❌ Unknown command: {cmd}. Use help or -h for help.")
