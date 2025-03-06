@@ -1,3 +1,4 @@
 colorama
 wget
 Pillow
+bs4

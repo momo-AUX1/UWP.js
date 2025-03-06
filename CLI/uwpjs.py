@@ -12,6 +12,7 @@ from PIL import Image
 import secrets
 import platform
 import subprocess
+from bs4 import BeautifulSoup
 from colorama import Fore, Style
 
 colorama.init(autoreset=True)
@@ -23,7 +24,9 @@ capDATA = None
 current_web_dir = None
 resources_dir = None
 patch_wasm = False
-__version__ = "0.0.1"
+patch_css = False
+patch_controller = False
+__version__ = "0.0.2"
 __author__ = "momo-AUX1"
 
 def parsecapacitor(path):
@@ -187,6 +190,58 @@ def rename_wasm_files(project_name):
                             with open(sub_file_path, 'w', encoding='utf-8', errors='ignore') as f:
                                 f.write(new_content)
                             print(Fore.MAGENTA + f"Updated reference in {sub_file_path}: {file} -> {new_file}")
+    print(Fore.GREEN + "✅ Renamed WASM files and updated references.")
+
+def apply_css_patch(project_name):
+    print(Fore.BLUE + "🔄 Patching CSS for canvas to full screen...")
+
+    wp_dir = os.path.join("uwp", project_name, "Assets", "WP")
+    target_file = None
+
+    index_html = os.path.join(wp_dir, "index.html")
+    if os.path.exists(index_html):
+        target_file = index_html
+    else:
+        html_candidates = [f for f in os.listdir(wp_dir) if f.lower().endswith('.html')]
+        if len(html_candidates) > 0:
+            for candidate in html_candidates:
+                if candidate.lower() == "index.html":
+                    target_file = os.path.join(wp_dir, candidate)
+                    break
+            if not target_file:
+                target_file = os.path.join(wp_dir, html_candidates[0])
+
+    if not target_file:
+        print(Fore.YELLOW + "⚠️  No HTML file found in " + wp_dir)
+        return
+
+    try:
+        with open(target_file, 'r', encoding='utf-8', errors='ignore') as f:
+            html_content = f.read()
+    except Exception as e:
+        print(Fore.RED + f"❌ Error reading HTML file {target_file}: {e}")
+        return
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    canvas = soup.find("canvas")
+    if canvas is None:
+        print(Fore.YELLOW + f"⚠️  No canvas element found in {target_file}.")
+        return
+
+    style_patch = "position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 99999999;"
+    existing_style = canvas.get("style", "")
+    if style_patch not in existing_style:
+        if existing_style and not existing_style.strip().endswith(";"):
+            existing_style += ";"
+        new_style = (existing_style + " " + style_patch).strip()
+        canvas["style"] = new_style
+
+    try:
+        with open(target_file, 'w', encoding='utf-8') as f:
+            f.write(str(soup))
+        print(Fore.GREEN + f"✅ Patched canvas CSS in {target_file}")
+    except Exception as e:
+        print(Fore.RED + f"❌ Error writing patched HTML to {target_file}: {e}")
 
 def sync_project():
     try:
@@ -340,29 +395,33 @@ def sync_project():
     if patch_wasm:
         print(Fore.GREEN + "🔄 Patching WASM files...")
         rename_wasm_files(project_name)
+    
+    if patch_css:
+        print(Fore.GREEN + "🔄 Patching CSS files...")
+        apply_css_patch(project_name)
 
     print(Fore.GREEN + f"✅ Sync complete! Your UWP.js project '{project_name}' is now up-to-date.")
 
 def main():
-    global patch_wasm
+    global patch_wasm, patch_css, patch_controller
 
     args = sys.argv
     if len(args) < 2:
         print(Fore.RED + "❌ No command provided. Use help or -h for help.")
         sys.exit(1)
 
-    if len(args) > 4:
+    if len(args) > 6:
         print(Fore.RED + "❌ Too many arguments provided. Use help or -h for help.")
         sys.exit(1)
 
     cmd = args[1]
-    modifier = args[2] if len(args) > 2 else None
 
     if cmd in ["help", "-h"]:
         print(Fore.CYAN + "ℹ️  Available commands:")
         print(Fore.CYAN + "   init, -i   : Initialize UWP.js for your project")
         print(Fore.CYAN + "   sync, -s   : Sync your project build and images to UWP.js environment")
         print(Fore.CYAN + "   open, -o   : Open the UWP.js project in Visual Studio")
+        print(Fore.YELLOW + "⚠️  Use --patch-wasm and --patch-css to apply additional patches while syncing.")
         sys.exit(0)
 
     
@@ -401,8 +460,11 @@ def main():
             print(Fore.RED + "❌ UWPJS project not initialized. exiting...")
             sys.exit(1)
         print(Fore.BLUE + "🔄 Syncing UWPjs project...")
-        if modifier == "--patch-wasm":
-            patch_wasm = True
+
+        patch_wasm = "--patch-wasm" in args
+        patch_css = "--patch-css" in args
+        patch_controller = "--patch-controller" in args
+
         sync_project()
     else:
         print(Fore.RED + f"❌ Unknown command: {cmd}. Use help or -h for help.")
