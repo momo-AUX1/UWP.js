@@ -217,7 +217,7 @@ class UwpBridge {
     return await this.callNative("ClearNotifications");
   }
 
-  async vibrateController(durationMs, strength) {
+  async vibrateController(durationMs = "300", strength = "0.5") {
     return await this.callNative("VibrateController", durationMs, strength);
   }
 
