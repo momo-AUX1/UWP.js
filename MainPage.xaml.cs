@@ -20,6 +20,8 @@ using Microsoft.UI.Xaml.Controls;
 using Windows.UI.Core;
 using Microsoft.Toolkit.Uwp.Notifications;
 using Windows.UI.Xaml.Input;
+using Windows.Gaming.Input;
+using Windows.Foundation;
 
 namespace UWP.js
 {
@@ -29,6 +31,9 @@ namespace UWP.js
         private HttpClient _httpClient;
         private bool _cancelDownload;
         private Dictionary<string, string> customHeaders = new Dictionary<string, string>();
+        private static Gamepad _currentGamepad;
+        private static bool _gamepadSubscribed;
+        private Uri _pendingProtocolUri;
 
         public MainPage()
         {
@@ -39,7 +44,22 @@ namespace UWP.js
             _httpClient = new HttpClient();
 
             SystemNavigationManager.GetForCurrentView().BackRequested += App_BackRequested;
+            if (!_gamepadSubscribed)
+            {
+                _currentGamepad = Gamepad.Gamepads.LastOrDefault();
+                Gamepad.GamepadAdded += (sender, gamepad) => { _currentGamepad = gamepad; };
+                Gamepad.GamepadRemoved += (sender, gamepad) =>
+                {
+                    if (_currentGamepad == gamepad)
+                    {
+                        _currentGamepad = Gamepad.Gamepads.LastOrDefault();
+                    }
+                };
+                _gamepadSubscribed = true;
+            }
         }
+
+        public Gamepad CurrentGamepad => _currentGamepad;
 
         public void SetCustomHeaders(Dictionary<string, string> headers)
         {
@@ -89,21 +109,33 @@ namespace UWP.js
 
         private async void CoreWebView2_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
-            string script;
-            var patcherPath = Path.Combine(Directory.GetCurrentDirectory(), "Assets", "WP", "patcher.js");
-
-            if (File.Exists(patcherPath))
+            try
             {
-                script = await File.ReadAllTextAsync(patcherPath);
-                //script = "";
-            }
-            else
-            {
-                Console.WriteLine("patcher.js file not found");
-                return;
-            }
+                var installPath = Windows.ApplicationModel.Package.Current.InstalledLocation.Path;
+                var patcherPath = Path.Combine(installPath, "Assets", "WP", "patcher.js");
 
-            await _coreWebView2.ExecuteScriptAsync(script);
+                if (File.Exists(patcherPath))
+                {
+                    var script = await File.ReadAllTextAsync(patcherPath);
+                    await _coreWebView2.ExecuteScriptAsync(script);
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("patcher.js file not found");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error running patcher.js: {ex.Message}");
+            }
+            finally
+            {
+                if (_pendingProtocolUri != null)
+                {
+                    PostProtocolActivatedEvent(_pendingProtocolUri);
+                    _pendingProtocolUri = null;
+                }
+            }
         }
 
         private void App_BackRequested(object sender, BackRequestedEventArgs e)
@@ -157,6 +189,65 @@ namespace UWP.js
 
                 sender.PostWebMessageAsString(responseMessage);
             }
+        }
+
+        protected override void OnNavigatedTo(Windows.UI.Xaml.Navigation.NavigationEventArgs e)
+        {
+            base.OnNavigatedTo(e);
+            if (e.Parameter is Uri uri)
+            {
+                HandleProtocolUri(uri);
+            }
+        }
+
+        public void HandleProtocolUri(Uri uri)
+        {
+            if (_coreWebView2 == null)
+            {
+                _pendingProtocolUri = uri;
+                return;
+            }
+            PostProtocolActivatedEvent(uri);
+        }
+
+        private void PostProtocolActivatedEvent(Uri uri)
+        {
+            var data = new Dictionary<string, object>
+            {
+                ["uri"] = uri.AbsoluteUri,
+                ["scheme"] = uri.Scheme,
+                ["host"] = uri.Host,
+                ["path"] = uri.AbsolutePath,
+                ["query"] = ParseQuery(uri)
+            };
+
+            var envelope = new Dictionary<string, object>
+            {
+                ["event"] = "protocolActivated",
+                ["data"] = data
+            };
+
+            var payload = JsonSerializer.Serialize(envelope);
+            _coreWebView2.PostWebMessageAsString(payload);
+        }
+
+        private static Dictionary<string, string> ParseQuery(Uri uri)
+        {
+            var map = new Dictionary<string, string>();
+            try
+            {
+                var q = uri.Query;
+                if (!string.IsNullOrEmpty(q))
+                {
+                    var decoder = new Windows.Foundation.WwwFormUrlDecoder(q);
+                    foreach (var pair in decoder)
+                    {
+                        map[pair.Name] = pair.Value;
+                    }
+                }
+            }
+            catch { }
+            return map;
         }
 
         public class NotificationData
@@ -1003,6 +1094,59 @@ namespace UWP.js
 
                 return Task.FromResult(platform);
             }
+
+            public async Task<string> VibrateController(string durationMs, string strength)
+            {
+                try
+                {
+                    int duration = 300;
+                    if (!string.IsNullOrWhiteSpace(durationMs) && int.TryParse(durationMs, out var parsedDuration))
+                    {
+                        if (parsedDuration >= 0)
+                        {
+                            duration = parsedDuration;
+                        }
+                    }
+
+                    double power = 1.0;
+                    if (!string.IsNullOrWhiteSpace(strength))
+                    {
+                        if (double.TryParse(strength, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var p) ||
+                            double.TryParse(strength, out p))
+                        {
+                            power = p;
+                        }
+                    }
+                    if (power < 0.1) power = 0.1;
+                    if (power > 1.0) power = 1.0;
+
+                    var listCount = Windows.Gaming.Input.Gamepad.Gamepads.Count;
+                    var gamepad = _mainPage.CurrentGamepad ?? Windows.Gaming.Input.Gamepad.Gamepads.LastOrDefault();
+                    if (gamepad == null)
+                    {
+                        return $"Error No gamepad connected (Gamepads.Count={listCount})";
+                    }
+
+                    var vibration = new Windows.Gaming.Input.GamepadVibration
+                    {
+                        LeftMotor = power,
+                        RightMotor = power,
+                        LeftTrigger = 0,
+                        RightTrigger = 0
+                    };
+
+                    gamepad.Vibration = vibration;
+                    await Task.Delay(duration);
+                    gamepad.Vibration = new Windows.Gaming.Input.GamepadVibration();
+
+                    return $"Vibrated for {duration}ms at strength {power:0.##}";
+                }
+                catch (Exception ex)
+                {
+                    return $"Error vibrating controller: {ex.Message}";
+                }
+            }
+
 
             public async Task<string> quitApp()
             {

@@ -40,6 +40,12 @@
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png"/>
         <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
+      <Extensions>
+        <uap:Extension Category="windows.protocol">
+        <!-- put your URI name here -->
+          <uap:Protocol Name="uwpjs" />
+        </uap:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

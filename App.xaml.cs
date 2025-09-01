@@ -14,6 +14,8 @@ using Windows.UI.Xaml.Data;
 using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
+using Windows.ApplicationModel.Activation;
+using Windows.System.Profile;
 
 namespace UWP.js
 {
@@ -72,6 +74,36 @@ namespace UWP.js
                 // Ensure the current window is active
                 Window.Current.Activate();
             }
+        }
+
+        protected override void OnActivated(IActivatedEventArgs args)
+        {
+            base.OnActivated(args);
+
+            Frame rootFrame = Window.Current.Content as Frame;
+            if (rootFrame == null)
+            {
+                rootFrame = new Frame();
+                rootFrame.NavigationFailed += OnNavigationFailed;
+                Window.Current.Content = rootFrame;
+            }
+
+            if (args.Kind == ActivationKind.Protocol)
+            {
+                var protocolArgs = (ProtocolActivatedEventArgs)args;
+                var uri = protocolArgs.Uri;
+
+                if (rootFrame.Content == null)
+                {
+                    rootFrame.Navigate(typeof(MainPage), uri);
+                }
+                else if (rootFrame.Content is MainPage page)
+                {
+                    page.HandleProtocolUri(uri);
+                }
+            }
+
+            Window.Current.Activate();
         }
 
         /// <summary>

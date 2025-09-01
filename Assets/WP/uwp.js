@@ -216,6 +216,17 @@ class UwpBridge {
   async clearNotification() {
     return await this.callNative("ClearNotifications");
   }
+
+  async vibrateController(durationMs, strength) {
+    return await this.callNative("VibrateController", durationMs, strength);
+  }
+
+  /**
+   * // Listen for deep link events forwarded from C#
+    uwp.on('protocolActivated', ({ uri, scheme, host, path, query }) => {
+        console.log('Deep link received:', { uri, scheme, host, path, query });
+    });
+   */
 }
 
 export default UwpBridge;
