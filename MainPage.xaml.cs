@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Windows.ApplicationModel;
 using Windows.Storage;
 using Windows.Storage.Pickers;
+using Windows.System;
 using Windows.UI.Popups;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
@@ -181,11 +182,35 @@ namespace UWP.js
 
             if (request != null && request.ContainsKey("method") && request.ContainsKey("args"))
             {
+                request.TryGetValue("id", out var idObj);
+                var reqId = idObj?.ToString();
                 var methodName = request["method"].ToString();
                 var argsArray = ((JsonElement)request["args"]).EnumerateArray().Select(a => a.GetString()).ToArray();
 
-                var response = await CallNativeMethodAsync(methodName, argsArray);
-                var responseMessage = JsonSerializer.Serialize(new { result = response });
+                string response;
+                string error = null;
+                try
+                {
+                    response = await CallNativeMethodAsync(methodName, argsArray);
+                }
+                catch (Exception ex)
+                {
+                    response = null;
+                    error = ex.Message;
+                }
+
+                var envelope = new Dictionary<string, object>();
+                if (!string.IsNullOrEmpty(reqId)) envelope["id"] = reqId;
+                if (error != null)
+                {
+                    envelope["error"] = error;
+                }
+                else
+                {
+                    envelope["result"] = response;
+                }
+
+                var responseMessage = JsonSerializer.Serialize(envelope);
 
                 sender.PostWebMessageAsString(responseMessage);
             }
@@ -320,19 +345,26 @@ namespace UWP.js
 
             public async Task<string> pickFolder()
             {
-                FolderPicker folderPicker = new FolderPicker();
-                folderPicker.SuggestedStartLocation = PickerLocationId.Desktop;
-                folderPicker.FileTypeFilter.Add("*");
-                StorageFolder folder = await folderPicker.PickSingleFolderAsync();
-
-                if (folder == null)
+                try
                 {
-                    return "No folder selected";
+                    FolderPicker folderPicker = new FolderPicker();
+                    folderPicker.SuggestedStartLocation = PickerLocationId.Desktop;
+                    folderPicker.FileTypeFilter.Add("*");
+                    StorageFolder folder = await folderPicker.PickSingleFolderAsync();
+
+                    if (folder == null)
+                    {
+                        return JsonSerializer.Serialize(new { completed = false, error = "No folder selected" });
+                    }
+
+                    _coreWebView2.SetVirtualHostNameToFolderMapping("selectedcontent", folder.Path, CoreWebView2HostResourceAccessKind.Allow);
+
+                    return JsonSerializer.Serialize(new { completed = true, data = folder.Path });
                 }
-
-                _coreWebView2.SetVirtualHostNameToFolderMapping("selectedcontent", folder.Path, CoreWebView2HostResourceAccessKind.Allow);
-
-                return $"{folder.Path}";
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
+                }
             }
 
             public async Task<string> read(string filePathOrName, string codec = null)
@@ -356,17 +388,17 @@ namespace UWP.js
                         var buffer = await FileIO.ReadBufferAsync(file);
                         var bytes = buffer.ToArray();
                         var base64String = Convert.ToBase64String(bytes);
-                        return base64String;
+                        return JsonSerializer.Serialize(new { completed = true, data = base64String, encoding = "base64" });
                     }
                     else
                     {
                         var content = await FileIO.ReadTextAsync(file);
-                        return content;
+                        return JsonSerializer.Serialize(new { completed = true, data = content, encoding = "text" });
                     }
                 }
                 catch (Exception ex)
                 {
-                    return $"Error reading file: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -390,11 +422,11 @@ namespace UWP.js
                     }
 
                     await FileIO.WriteTextAsync(file, data);
-                    return "File written successfully";
+                    return JsonSerializer.Serialize(new { completed = true, data = file.Path });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error writing file: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -404,12 +436,12 @@ namespace UWP.js
                 {
                     var folder = await StorageFolder.GetFolderFromPathAsync(folderPath);
                     var files = await folder.GetFilesAsync();
-                    var fileNames = string.Join(",", files.Select(f => f.Name));
-                    return fileNames;
+                    var fileNames = files.Select(f => f.Name).ToArray();
+                    return JsonSerializer.Serialize(new { completed = true, data = fileNames, path = folderPath });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error reading directory: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -421,14 +453,15 @@ namespace UWP.js
                     var files = await localFolder.GetFilesAsync();
                     var folders = await localFolder.GetFoldersAsync();
                     var allItems = files.Cast<IStorageItem>()
-                                        .Concat(folders.Cast<IStorageItem>());
+                                        .Concat(folders.Cast<IStorageItem>())
+                                        .Select(item => new { name = item.Name, path = item.Path, isFolder = item is StorageFolder })
+                                        .ToArray();
 
-                    var result = $"{localFolder.Path}|{string.Join(",", allItems.Select(item => item.Path))}";
-                    return result;
+                    return JsonSerializer.Serialize(new { completed = true, data = allItems, path = localFolder.Path });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error reading local directory: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -440,11 +473,11 @@ namespace UWP.js
                 {
                     var messageDialog = new MessageDialog(text, title);
                     await messageDialog.ShowAsync();
-                    return "Alert shown successfully";
+                    return JsonSerializer.Serialize(new { completed = true, data = "shown" });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error showing alert: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -457,11 +490,11 @@ namespace UWP.js
                     messageDialog.Commands.Add(new UICommand(noButtonText, null, 1));
                     var result = await messageDialog.ShowAsync();
 
-                    return result.Id.ToString();
+                    return JsonSerializer.Serialize(new { completed = true, data = result.Id.ToString(), buttonPressed = result.Label });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error showing dialog: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -504,7 +537,14 @@ namespace UWP.js
                 await progressDialog.ShowAsync();
                 await task;
 
-                return _mainPage._cancelDownload ? "Download cancelled" : "Download completed";
+                bool cancelled = _mainPage._cancelDownload;
+                return JsonSerializer.Serialize(new { 
+                    completed = true, 
+                    data = new { 
+                        cancelled = cancelled,
+                        result = cancelled ? "cancelled" : "completed"
+                    } 
+                });
             }
 
 
@@ -546,10 +586,11 @@ namespace UWP.js
                     }
 
                     var dialogResult = await showDialog("UWP download", $"Are you sure you want to download {fileName}? ({fileSizeString})", "Yes", "No");
+                    var dialogResponse = JsonSerializer.Deserialize<Dictionary<string, object>>(dialogResult);
 
-                    if (dialogResult != "0")
+                    if (dialogResponse["data"].ToString() != "0")
                     {
-                        return "Download cancelled";
+                        return JsonSerializer.Serialize(new { completed = false, error = "Download cancelled by user" });
                     }
 
                     StorageFolder folder;
@@ -636,11 +677,11 @@ namespace UWP.js
                         }
                     }
 
-                    return $"File downloaded successfully: {file.Path}";
+                    return JsonSerializer.Serialize(new { completed = true, data = new { path = file.Path, fileName = fileName, size = fileSize } });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error downloading file: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -655,36 +696,36 @@ namespace UWP.js
 
                     if (file == null)
                     {
-                        return "No file selected";
+                        return JsonSerializer.Serialize(new { completed = false, error = "No file selected" });
                     }
 
                     _coreWebView2.SetVirtualHostNameToFolderMapping("selectedfiles", System.IO.Path.GetDirectoryName(file.Path), CoreWebView2HostResourceAccessKind.Allow);
 
-                    return $"{file.Name}|{file.Path}";
+                    return JsonSerializer.Serialize(new { completed = true, data = new { name = file.Name, path = file.Path } });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error selecting file: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
             public async Task<string> setDownloadLocation(string path)
             {
-                if (string.IsNullOrEmpty(path))
-                {
-                    downloadLocation = null;
-                    return "Download location reset to default.";
-                }
-
                 try
                 {
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        downloadLocation = null;
+                        return JsonSerializer.Serialize(new { completed = true, data = "default", message = "Download location reset to default" });
+                    }
+
                     var folder = await StorageFolder.GetFolderFromPathAsync(path);
                     downloadLocation = folder.Path;
-                    return $"Download location set to {downloadLocation}.";
+                    return JsonSerializer.Serialize(new { completed = true, data = downloadLocation });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error setting download location: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -707,77 +748,91 @@ namespace UWP.js
                         folder = await localFolder.CreateFolderAsync(folderPathOrName, CreationCollisionOption.OpenIfExists);
                     }
 
-                    return $"Folder created successfully: {folder.Path}";
+                    return JsonSerializer.Serialize(new { completed = true, data = folder.Path });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error creating folder: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
             public async Task<string> redirect(string url)
             {
-                if (string.IsNullOrEmpty(url))
-                {
-                    return "Invalid URL";
-                }
-
                 try
                 {
+                    if (string.IsNullOrEmpty(url))
+                    {
+                        return JsonSerializer.Serialize(new { completed = false, error = "Invalid URL" });
+                    }
+
                     _mainPage.WebView2.Source = new Uri(url);
-                    return "Redirect successful";
+                    return JsonSerializer.Serialize(new { completed = true, data = url });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error during redirection: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
             public async Task<string> HideCursor()
             {
-                Window.Current.CoreWindow.PointerCursor = null;
-
-                await _coreWebView2.ExecuteScriptAsync(@"
-                    document.querySelector('body').style.cursor = 'none';
-                    document.body.requestPointerLock = document.body.requestPointerLock ||
-                                               document.body.mozRequestPointerLock ||
-                                               document.body.webkitRequestPointerLock;
-                    document.body.requestPointerLock();
-                    navigator.gamepadInputEmulation = 'gamepad';
-                    ");
-
-                await _mainPage.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                try
                 {
-                    _mainPage.WebView2.Focus(FocusState.Programmatic);
-                });
+                    Window.Current.CoreWindow.PointerCursor = null;
 
-                isCursorHidden = true;
-                return "Cursor hidden and pointer locked to center";
+                    await _coreWebView2.ExecuteScriptAsync(@"
+                        document.querySelector('body').style.cursor = 'none';
+                        document.body.requestPointerLock = document.body.requestPointerLock ||
+                                                   document.body.mozRequestPointerLock ||
+                                                   document.body.webkitRequestPointerLock;
+                        document.body.requestPointerLock();
+                        navigator.gamepadInputEmulation = 'gamepad';
+                        ");
+
+                    await _mainPage.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                    {
+                        _mainPage.WebView2.Focus(FocusState.Programmatic);
+                    });
+
+                    isCursorHidden = true;
+                    return JsonSerializer.Serialize(new { completed = true, data = "hidden" });
+                }
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
+                }
             }
 
             public async Task<string> ShowCursor()
             {
-                Window.Current.CoreWindow.PointerCursor = new CoreCursor(CoreCursorType.Arrow, 0);
-                await _coreWebView2.ExecuteScriptAsync(@"
-                      document.querySelector('body').style.cursor = 'default';
-                      if (document.pointerLockElement) {
-                        document.exitPointerLock = document.exitPointerLock ||
-                                           document.mozExitPointerLock ||
-                                           document.webkitExitPointerLock;
-                        document.exitPointerLock();
-                    }
-                    navigator.gamepadInputEmulation = 'mouse';
-                ");
-
-                //Application.Current.RequiresPointerMode = ApplicationRequiresPointerMode.Auto;
-
-                await _mainPage.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                try
                 {
-                    FocusManager.TryMoveFocus(FocusNavigationDirection.Next);
-                });
+                    Window.Current.CoreWindow.PointerCursor = new CoreCursor(CoreCursorType.Arrow, 0);
+                    await _coreWebView2.ExecuteScriptAsync(@"
+                          document.querySelector('body').style.cursor = 'default';
+                          if (document.pointerLockElement) {
+                            document.exitPointerLock = document.exitPointerLock ||
+                                               document.mozExitPointerLock ||
+                                               document.webkitExitPointerLock;
+                            document.exitPointerLock();
+                        }
+                        navigator.gamepadInputEmulation = 'mouse';
+                    ");
 
-                isCursorHidden = false;
-                return "Cursor visible and pointer unlocked";
+                    //Application.Current.RequiresPointerMode = ApplicationRequiresPointerMode.Auto;
+
+                    await _mainPage.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                    {
+                        FocusManager.TryMoveFocus(FocusNavigationDirection.Next);
+                    });
+
+                    isCursorHidden = false;
+                    return JsonSerializer.Serialize(new { completed = true, data = "visible" });
+                }
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
+                }
             }
 
             public async Task<string> zipFolder(string folderPath, string outputPath = null)
@@ -794,11 +849,11 @@ namespace UWP.js
                         if (Directory.Exists(folderPath))
                         {
                             ZipFile.CreateFromDirectory(folderPath, outputPath);
-                            return $"Folder zipped successfully to {outputPath}";
+                            return JsonSerializer.Serialize(new { completed = true, data = new { sourcePath = folderPath, zipPath = outputPath } });
                         }
                         else
                         {
-                            return "Folder not found";
+                            return JsonSerializer.Serialize(new { completed = false, error = "Folder not found" });
                         }
                     }
                     else
@@ -810,17 +865,17 @@ namespace UWP.js
                         {
                             outputPath = outputPath ?? Path.Combine(folderFullPath, Path.GetFileName(folderFullPath) + ".zip");
                             ZipFile.CreateFromDirectory(folderFullPath, outputPath);
-                            return $"Folder zipped successfully to {outputPath}";
+                            return JsonSerializer.Serialize(new { completed = true, data = new { sourcePath = folderFullPath, zipPath = outputPath } });
                         }
                         else
                         {
-                            return "Folder not found";
+                            return JsonSerializer.Serialize(new { completed = false, error = "Folder not found" });
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    return $"Error zipping folder: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -837,10 +892,11 @@ namespace UWP.js
                         outputPath = Path.Combine(ApplicationData.Current.LocalFolder.Path, outputPath);
                     }
 
-                    async Task<string> UnzipFile(string filePath)
+                    async Task<object> UnzipFile(string filePath)
                     {
                         try
                         {
+                            var extractedFiles = new List<string>();
                             using (ZipArchive archive = ZipFile.OpenRead(filePath))
                             {
                                 foreach (ZipArchiveEntry entry in archive.Entries)
@@ -868,14 +924,15 @@ namespace UWP.js
                                         }
 
                                         entry.ExtractToFile(destinationPath, true);
+                                        extractedFiles.Add(destinationPath);
                                     }
                                 }
                             }
-                            return $"File unzipped successfully to {outputPath}";
+                            return new { completed = true, data = new { outputPath = outputPath, extractedFiles = extractedFiles.ToArray() } };
                         }
                         catch (Exception ex)
                         {
-                            return $"Error unzipping file at {outputPath}: {ex.Message}";
+                            return new { completed = false, error = ex.Message };
                         }
                     }
 
@@ -887,16 +944,17 @@ namespace UWP.js
 
                     if (File.Exists(resolvedZipPath))
                     {
-                        return await UnzipFile(resolvedZipPath);
+                        var result = await UnzipFile(resolvedZipPath);
+                        return JsonSerializer.Serialize(result);
                     }
                     else
                     {
-                        return $"Zip file not found at {resolvedZipPath}";
+                        return JsonSerializer.Serialize(new { completed = false, error = $"Zip file not found at {resolvedZipPath}" });
                     }
                 }
                 catch (Exception ex)
                 {
-                    return $"Error processing zip file at {zipPath} with output path {outputPath}: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
             public async Task<string> deleteFile(string filePath)
@@ -905,11 +963,11 @@ namespace UWP.js
                 {
                     StorageFile file = await StorageFile.GetFileFromPathAsync(filePath);
                     await file.DeleteAsync();
-                    return $"File deleted successfully: {filePath}";
+                    return JsonSerializer.Serialize(new { completed = true, data = filePath });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error deleting file: {filePath} - {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -919,11 +977,11 @@ namespace UWP.js
                 {
                     StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(folderPath);
                     await folder.DeleteAsync(StorageDeleteOption.PermanentDelete);
-                    return $"Folder deleted successfully: {folderPath}";
+                    return JsonSerializer.Serialize(new { completed = true, data = folderPath });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error deleting folder: {folderPath} - {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -941,15 +999,28 @@ namespace UWP.js
 
                     var drives = DriveInfo.GetDrives()
                         .Where(d => d.IsReady)
-                        .Select(d => $"{d.Name} - {d.DriveType} - Free Space: {d.AvailableFreeSpace / (1024 * 1024)} MB - Total Space: {d.TotalSize / (1024 * 1024)} MB")
+                        .Select(d => new { 
+                            name = d.Name, 
+                            type = d.DriveType.ToString(), 
+                            freeSpaceMB = d.AvailableFreeSpace / (1024 * 1024), 
+                            totalSpaceMB = d.TotalSize / (1024 * 1024) 
+                        })
                         .ToArray();
-                    string drivesInfo = string.Join(", ", drives);
 
-                    return $"OS: {osVersion} | RAM: {usedMemory / (1024 * 1024)} MB / {totalMemory / (1024 * 1024)} MB | CPU Speed: {cpuSpeed} | CPU Cores: {processor_count} | Drives: {drivesInfo}";
+                    var systemInfo = new {
+                        os = osVersion,
+                        ramUsedMB = usedMemory / (1024 * 1024),
+                        ramTotalMB = totalMemory / (1024 * 1024),
+                        cpuSpeed = cpuSpeed,
+                        cpuCores = processor_count,
+                        drives = drives
+                    };
+
+                    return JsonSerializer.Serialize(new { completed = true, data = systemInfo });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error retrieving system information: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -959,18 +1030,25 @@ namespace UWP.js
                 {
                     var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(headersJson);
                     _mainPage.SetCustomHeaders(headers);
-                    return "Headers set successfully";
+                    return JsonSerializer.Serialize(new { completed = true, data = headers });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error setting headers: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
             public async Task<string> clearheaders()
             {
-                _mainPage.ClearCustomHeaders();
-                return "Headers cleared";
+                try
+                {
+                    _mainPage.ClearCustomHeaders();
+                    return JsonSerializer.Serialize(new { completed = true, data = "cleared" });
+                }
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
+                }
             }
 
             public async Task<string> ShowNotification(string notificationJson)
@@ -980,7 +1058,7 @@ namespace UWP.js
                     var notification = JsonSerializer.Deserialize<NotificationData>(notificationJson);
 
                     if (notification == null)
-                        return "Invalid notification data.";
+                        return JsonSerializer.Serialize(new { completed = false, error = "Invalid notification data" });
 
                     var toastBuilder = new ToastContentBuilder();
 
@@ -1064,11 +1142,11 @@ namespace UWP.js
                         }
                     });
 
-                    return "Notification shown successfully.";
+                    return JsonSerializer.Serialize(new { completed = true, data = new { id = notification.Id, shown = true } });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error showing notification: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -1077,22 +1155,29 @@ namespace UWP.js
                 try
                 {
                     ToastNotificationManagerCompat.History.Clear();
-                    return "All notifications cleared successfully.";
+                    return JsonSerializer.Serialize(new { completed = true, data = "cleared" });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error clearing notifications: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
             public Task<string> GetPlatform()
             {
-                var deviceFamily = Windows.System.Profile.AnalyticsInfo.VersionInfo.DeviceFamily;
-                string platform = deviceFamily.Equals("Windows.Xbox", StringComparison.OrdinalIgnoreCase)
-                        ? "xbox"
-                        : "windows";
+                try
+                {
+                    var deviceFamily = Windows.System.Profile.AnalyticsInfo.VersionInfo.DeviceFamily;
+                    string platform = deviceFamily.Equals("Windows.Xbox", StringComparison.OrdinalIgnoreCase)
+                            ? "xbox"
+                            : "windows";
 
-                return Task.FromResult(platform);
+                    return Task.FromResult(JsonSerializer.Serialize(new { completed = true, data = platform }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(JsonSerializer.Serialize(new { completed = false, error = ex.Message }));
+                }
             }
 
             public async Task<string> VibrateController(string durationMs, string strength)
@@ -1124,7 +1209,7 @@ namespace UWP.js
                     var gamepad = _mainPage.CurrentGamepad ?? Windows.Gaming.Input.Gamepad.Gamepads.LastOrDefault();
                     if (gamepad == null)
                     {
-                        return $"Error No gamepad connected (Gamepads.Count={listCount})";
+                        return JsonSerializer.Serialize(new { completed = false, error = $"No gamepad connected (Gamepads.Count={listCount})" });
                     }
 
                     var vibration = new Windows.Gaming.Input.GamepadVibration
@@ -1139,11 +1224,11 @@ namespace UWP.js
                     await Task.Delay(duration);
                     gamepad.Vibration = new Windows.Gaming.Input.GamepadVibration();
 
-                    return $"Vibrated for {duration}ms at strength {power:0.##}";
+                    return JsonSerializer.Serialize(new { completed = true, data = new { duration = duration, strength = power } });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error vibrating controller: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
 
@@ -1153,11 +1238,45 @@ namespace UWP.js
                 try
                 {
                     CoreApplication.Exit();
-                    return "App is closing.";
+                    return JsonSerializer.Serialize(new { completed = true, data = "closing" });
                 }
                 catch (Exception ex)
                 {
-                    return $"Error quitting app: {ex.Message}";
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
+                }
+            }
+
+            public async Task<string> canOpenUrl(string url)
+            {
+                try
+                {
+                    var uri = new Uri(url);
+                    
+                    var launchQuerySupportType = Windows.System.LaunchQuerySupportType.Uri;
+                    var launchQuerySupportStatus = await Windows.System.Launcher.QueryUriSupportAsync(uri, launchQuerySupportType);
+                    
+                    bool canOpen = launchQuerySupportStatus == Windows.System.LaunchQuerySupportStatus.Available;
+                    
+                    return JsonSerializer.Serialize(new { completed = true, data = canOpen });
+                }
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
+                }
+            }
+
+            public async Task<string> openUrl(string url)
+            {
+                try
+                {
+                    var uri = new Uri(url);
+                    bool success = await Windows.System.Launcher.LaunchUriAsync(uri);
+                    
+                    return JsonSerializer.Serialize(new { completed = true, data = success });
+                }
+                catch (Exception ex)
+                {
+                    return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
             }
         }

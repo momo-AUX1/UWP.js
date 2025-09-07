@@ -17,6 +17,7 @@ const CapacitorUWP = {
     
     await HapticsPlugin.init(bridge);
     await PreferencesPlugin.init(bridge);
+    await AppLauncherPlugin.init(bridge);
   },
 };
 
@@ -71,7 +72,7 @@ const PreferencesPlugin = {
   },
 
   get: async function (options) {
-    const value = this._store[options.key] || null;
+    const value = this._store.hasOwnProperty(options.key) ? this._store[options.key] : null;
     return { value };
   },
 
@@ -223,6 +224,51 @@ const HapticsPlugin = {
     if (this._selectionActive) {
       await this._pulse(22, 0.4);
       this._selectionActive = false;
+    }
+  },
+};
+
+const AppLauncherPlugin = {
+  bridge: null,
+
+  init: async function (bridge) {
+    this.bridge = bridge;
+
+    window.Capacitor.AppLauncher = {
+      canOpenUrl: this.canOpenUrl.bind(this),
+      openUrl: this.openUrl.bind(this),
+    };
+
+    console.log(
+      "AppLauncherPlugin: Installed App Launcher API on window.Capacitor.AppLauncher",
+    );
+  },
+
+  canOpenUrl: async function (options) {
+    if (!options || !options.url) {
+      throw new Error("URL is required");
+    }
+
+    try {
+      const canOpen = await this.bridge.canOpenUrl(options.url);
+      return { value: canOpen };
+    } catch (error) {
+      console.error("AppLauncherPlugin: Error checking if URL can be opened:", error);
+      return { value: false };
+    }
+  },
+
+  openUrl: async function (options) {
+    if (!options || !options.url) {
+      throw new Error("URL is required");
+    }
+
+    try {
+      const completed = await this.bridge.openUrl(options.url);
+      return { completed: completed };
+    } catch (error) {
+      console.error("AppLauncherPlugin: Error opening URL:", error);
+      return { completed: false };
     }
   },
 };

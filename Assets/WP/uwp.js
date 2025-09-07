@@ -2,35 +2,58 @@ class UwpBridge {
   constructor() {
     this.eventListeners = {};
     this.plugins = [];
+    this._pending = new Map();
+    this._nextId = 1;
 
     window.chrome.webview.addEventListener("message", (event) => {
-      const response = event.data;
-      const result = JSON.parse(response);
+      const raw = event.data;
+      let payload;
+      try {
+        payload = JSON.parse(raw);
+      } catch (e) {
+        console.warn("UwpBridge: received non-JSON message", raw);
+        return;
+      }
 
-      if (result.event) {
-        this.emit(result.event, result.data);
+      if (payload && payload.event) {
+        this.emit(payload.event, payload.data);
+        return;
+      }
+
+      if (payload && payload.id) {
+        const entry = this._pending.get(payload.id);
+        if (!entry) {
+          return;
+        }
+
+        const { resolve, reject, timeout } = entry;
+        clearTimeout(timeout);
+        this._pending.delete(payload.id);
+
+        if (payload.error) {
+          reject(new Error(payload.error));
+        } else {
+          resolve(payload.result);
+        }
       }
     });
   }
 
   async callNative(methodName, ...args) {
-    const message = { method: methodName, args };
-    window.chrome.webview.postMessage(JSON.stringify(message));
+    const id = String(this._nextId++);
+    const message = { id, method: methodName, args };
 
-    return new Promise((resolve, reject) => {
-      const handler = (event) => {
-        const response = event.data;
-        const result = JSON.parse(response);
+    const promise = new Promise((resolve, reject) => {
+       const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error(`RPC timeout for ${methodName} (id=${id})`));
+      }, 30000);
 
-        if (result.error) {
-          reject(new Error(result.error));
-        } else {
-          resolve(result.result);
-        }
-        window.chrome.webview.removeEventListener("message", handler);
-      };
-      window.chrome.webview.addEventListener("message", handler);
+      this._pending.set(id, { resolve, reject, timeout });
     });
+
+    window.chrome.webview.postMessage(JSON.stringify(message));
+    return promise;
   }
 
   registerPlugin(plugin) {
@@ -53,103 +76,134 @@ class UwpBridge {
     }
   }
 
+  _handleStructuredResponse(result) {
+    const response = JSON.parse(result);
+    if (!response.completed) {
+      throw new Error(response.error || 'Operation failed');
+    }
+    return response.data;
+  }
+
   async readFile(fileName, codec = null) {
-    return await this.callNative("read", fileName, codec);
+    const result = await this.callNative("read", fileName, codec);
+    return this._handleStructuredResponse(result);
   }
 
   async writeFile(fileName, data) {
-    return await this.callNative("write", fileName, data);
+    const result = await this.callNative("write", fileName, data);
+    return this._handleStructuredResponse(result);
   }
 
   async readDir(folderPath) {
-    return await this.callNative("readDir", folderPath);
+    const result = await this.callNative("readDir", folderPath);
+    return this._handleStructuredResponse(result);
   }
 
   async readLocalDir() {
-    return await this.callNative("readLocalDir");
+    const result = await this.callNative("readLocalDir");
+    return this._handleStructuredResponse(result);
   }
 
   async showAlert(title, text) {
-    return await this.callNative("showAlert", title, text);
+    const result = await this.callNative("showAlert", title, text);
+    return this._handleStructuredResponse(result);
   }
 
   async showDialog(title, body, yesButtonText = "Yes", noButtonText = "No") {
-    return await this.callNative(
+    const result = await this.callNative(
       "showDialog",
       title,
       body,
       yesButtonText,
       noButtonText,
     );
+    return this._handleStructuredResponse(result);
   }
 
   async downloadFile(fileUrlOrData, encoding = "url", name = null) {
-    return await this.callNative("downloadFile", fileUrlOrData, encoding, name);
+    const result = await this.callNative("downloadFile", fileUrlOrData, encoding, name);
+    return this._handleStructuredResponse(result);
   }
 
   async selectFile() {
-    return await this.callNative("selectFile");
+    const result = await this.callNative("selectFile");
+    return this._handleStructuredResponse(result);
   }
 
   async setDownloadLocation(path) {
-    return await this.callNative("setDownloadLocation", path);
+    const result = await this.callNative("setDownloadLocation", path);
+    return this._handleStructuredResponse(result);
   }
 
   async createFolder(folderPathOrName) {
-    return await this.callNative("createFolder", folderPathOrName);
+    const result = await this.callNative("createFolder", folderPathOrName);
+    return this._handleStructuredResponse(result);
   }
 
   async pickFolder() {
-    return await this.callNative("pickFolder");
+    const result = await this.callNative("pickFolder");
+    return this._handleStructuredResponse(result);
   }
 
   async redirect(url) {
-    return await this.callNative("redirect", url);
+    const result = await this.callNative("redirect", url);
+    return this._handleStructuredResponse(result);
   }
 
   async zipFolder(folderPath, outputPath = null) {
-    return await this.callNative("zipFolder", folderPath, outputPath);
+    const result = await this.callNative("zipFolder", folderPath, outputPath);
+    return this._handleStructuredResponse(result);
   }
 
   async unzip(zipPath, outputPath = null) {
-    return await this.callNative("unzip", zipPath, outputPath);
+    const result = await this.callNative("unzip", zipPath, outputPath);
+    return this._handleStructuredResponse(result);
   }
 
   async deleteFile(filePath) {
-    return await this.callNative("deleteFile", filePath);
+    const result = await this.callNative("deleteFile", filePath);
+    return this._handleStructuredResponse(result);
   }
 
   async deleteFolder(folderPath) {
-    return await this.callNative("deleteFolder", folderPath);
+    const result = await this.callNative("deleteFolder", folderPath);
+    return this._handleStructuredResponse(result);
   }
 
   async getMachineStatus() {
-    return await this.callNative("GetMachineStatus");
+    const result = await this.callNative("GetMachineStatus");
+    return this._handleStructuredResponse(result);
   }
 
   async getPlatform() {
-    return await this.callNative("getPlatform");
+    const result = await this.callNative("GetPlatform");
+    return this._handleStructuredResponse(result);
   }
 
   async quitApp() {
-    return await this.callNative("quitApp");
+    const result = await this.callNative("quitApp");
+    return this._handleStructuredResponse(result);
   }
 
   async hideCursor() {
-    return await this.callNative("HideCursor");
+    const result = await this.callNative("HideCursor");
+    return this._handleStructuredResponse(result);
   }
 
   async showCursor() {
-    return await this.callNative("ShowCursor");
+    const result = await this.callNative("ShowCursor");
+    return this._handleStructuredResponse(result);
   }
 
   async setHeaders(headersObject) {
     const headersJson = JSON.stringify(headersObject);
-    return await this.callNative("setheaders", headersJson);
+    const result = await this.callNative("setheaders", headersJson);
+    return this._handleStructuredResponse(result);
   }
 
   async clearHeaders() {
-    return await this.callNative("clearheaders");
+    const result = await this.callNative("clearheaders");
+    return this._handleStructuredResponse(result);
   }
 
   /**
@@ -207,18 +261,32 @@ class UwpBridge {
    */
 
   async showNotification(notificationData) {
-    return await this.callNative(
+    const result = await this.callNative(
       "ShowNotification",
       JSON.stringify(notificationData),
     );
+    return this._handleStructuredResponse(result);
   }
 
   async clearNotification() {
-    return await this.callNative("ClearNotifications");
+    const result = await this.callNative("ClearNotifications");
+    return this._handleStructuredResponse(result);
   }
 
   async vibrateController(durationMs = "300", strength = "0.5") {
-    return await this.callNative("VibrateController", durationMs, strength);
+    const result = await this.callNative("VibrateController", durationMs, strength);
+    return this._handleStructuredResponse(result);
+  }
+
+  // App Launcher API methods
+  async canOpenUrl(url) {
+    const result = await this.callNative("canOpenUrl", url);
+    return this._handleStructuredResponse(result);
+  }
+
+  async openUrl(url) {
+    const result = await this.callNative("openUrl", url);
+    return this._handleStructuredResponse(result);
   }
 
   /**
