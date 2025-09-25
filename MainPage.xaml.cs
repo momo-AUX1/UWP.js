@@ -30,6 +30,7 @@ namespace UWP.js
     {
         private CoreWebView2 _coreWebView2;
         private HttpClient _httpClient;
+        private string _webContentRoot;
         private bool _cancelDownload;
         private Dictionary<string, string> customHeaders = new Dictionary<string, string>();
         private static Gamepad _currentGamepad;
@@ -81,6 +82,7 @@ namespace UWP.js
 
                 var folder = await Package.Current.InstalledLocation.GetFolderAsync("Assets");
                 var webContentFolder = await folder.GetFolderAsync("WP");
+                _webContentRoot = Path.GetFullPath(webContentFolder.Path);
                 var localFolder = ApplicationData.Current.LocalFolder;
                 var needsIndex = false;
 
@@ -150,28 +152,104 @@ namespace UWP.js
             WebView2.Height = Window.Current.Bounds.Height;
         }
 
-        private async void WebView2_WebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
+        private void WebView2_WebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
         {
             var uri = new Uri(args.Request.Uri);
-            var headers = args.Request.Headers;
-
-            headers.SetHeader("Access-Control-Allow-Origin", "*");
-            headers.SetHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            headers.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-            headers.SetHeader("Content-Security-Policy", "script-src 'self' 'unsafe-eval'; object-src 'self';");
-
-            if (uri.AbsolutePath.EndsWith(".wasm"))
-            {
-                headers.SetHeader("Content-Type", "application/wasm");
-            }
 
             if (customHeaders != null && customHeaders.Count > 0)
             {
                 foreach (var header in customHeaders)
                 {
-                    headers.SetHeader(header.Key, header.Value);
+                    args.Request.Headers.SetHeader(header.Key, header.Value);
                 }
+            }
+
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (!string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            TryServeLocalResource(args, uri);
+        }
+
+        private void TryServeLocalResource(CoreWebView2WebResourceRequestedEventArgs args, Uri uri)
+        {
+            if (args.Response != null || string.IsNullOrEmpty(_webContentRoot))
+            {
+                return;
+            }
+
+            var relativePath = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
+            if (string.IsNullOrEmpty(relativePath))
+            {
+                relativePath = "index.html";
+            }
+
+            var sanitizedRelativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+            string filePath;
+            try
+            {
+                filePath = Path.GetFullPath(Path.Combine(_webContentRoot, sanitizedRelativePath));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Invalid resource request path '{relativePath}': {ex}");
+                return;
+            }
+
+            var rootWithSeparator = _webContentRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                ? _webContentRoot
+                : _webContentRoot + Path.DirectorySeparatorChar;
+
+            if (!filePath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase) || !File.Exists(filePath))
+            {
+                return;
+            }
+
+            var extension = Path.GetExtension(filePath).ToLowerInvariant();
+            var isDocument = args.ResourceContext == CoreWebView2WebResourceContext.Document;
+            var isWasm = string.Equals(extension, ".wasm", StringComparison.OrdinalIgnoreCase);
+
+            if (!isDocument && !isWasm)
+            {
+                return;
+            }
+
+            try
+            {
+                var stream = File.OpenRead(filePath).AsRandomAccessStream();
+                var response = _coreWebView2.Environment.CreateWebResourceResponse(stream, 200, "OK", null);
+
+                if (isDocument)
+                {
+                    response.Headers.AppendHeader("Content-Type", "text/html; charset=utf-8");
+                    response.Headers.AppendHeader("Cross-Origin-Opener-Policy", "same-origin");
+                    response.Headers.AppendHeader("Cross-Origin-Embedder-Policy", "require-corp");
+                    response.Headers.AppendHeader("Content-Security-Policy", "script-src 'self' 'unsafe-eval'; object-src 'self';");
+                    response.Headers.AppendHeader("Access-Control-Allow-Origin", "*");
+                    response.Headers.AppendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                    response.Headers.AppendHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                }
+                else
+                {
+                    response.Headers.AppendHeader("Content-Type", "application/wasm");
+                    response.Headers.AppendHeader("Cross-Origin-Resource-Policy", "same-origin");
+                    response.Headers.AppendHeader("Access-Control-Allow-Origin", "*");
+                    response.Headers.AppendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                    response.Headers.AppendHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                }
+
+                args.Response = response;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to serve {filePath}: {ex}");
             }
         }
 
