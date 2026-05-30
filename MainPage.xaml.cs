@@ -6,15 +6,34 @@ using System.Linq;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.ApplicationModel;
+using Windows.Devices.Geolocation;
+using Windows.Devices.PointOfService;
+using Windows.Devices.Sensors;
+using Windows.Graphics.Display;
+using Windows.Media.Capture;
+using Windows.Media.SpeechSynthesis;
+using Windows.Networking.Connectivity;
+using Windows.Networking.PushNotifications;
+using Windows.Security.Credentials;
+using Windows.Security.Credentials.UI;
 using Windows.Storage;
 using Windows.Storage.Pickers;
+using Windows.Storage.Streams;
 using Windows.System;
+using Windows.System.Power;
+using Windows.System.Profile;
+using Windows.System.UserProfile;
+using Windows.UI;
 using Windows.UI.Popups;
+using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Media;
 using System.IO.Compression;
 using Windows.ApplicationModel.Core;
 using Microsoft.UI.Xaml.Controls;
@@ -36,6 +55,11 @@ namespace UWP.js
         private static Gamepad _currentGamepad;
         private static bool _gamepadSubscribed;
         private Uri _pendingProtocolUri;
+        private Uri _lastProtocolUri;
+        private Microsoft.UI.Xaml.Controls.WebView2 _browserWebView;
+        private DispatcherTimer _toastTimer;
+        private DataTransferManager _dataTransferManager;
+        private Dictionary<string, object> _pendingShareData;
 
         public MainPage()
         {
@@ -43,9 +67,11 @@ namespace UWP.js
             Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "151330");
             InitializeWebView();
             Window.Current.CoreWindow.SizeChanged += CoreWindow_SizeChanged;
+            Window.Current.VisibilityChanged += Window_VisibilityChanged;
             _httpClient = new HttpClient();
 
             SystemNavigationManager.GetForCurrentView().BackRequested += App_BackRequested;
+            RegisterSystemEventForwarders();
             if (!_gamepadSubscribed)
             {
                 _currentGamepad = Gamepad.Gamepads.LastOrDefault();
@@ -73,6 +99,62 @@ namespace UWP.js
             customHeaders.Clear();
         }
 
+        private void RegisterSystemEventForwarders()
+        {
+            try
+            {
+                NetworkInformation.NetworkStatusChanged += async (_) =>
+                {
+                    await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                    {
+                        PostEvent("networkStatusChange", BuildNetworkStatus());
+                    });
+                };
+            }
+            catch { }
+
+            try
+            {
+                var display = DisplayInformation.GetForCurrentView();
+                display.OrientationChanged += (_, __) =>
+                {
+                    PostEvent("screenOrientationChange", new { type = MapOrientation(display.CurrentOrientation) });
+                };
+            }
+            catch { }
+
+            try
+            {
+                var inputPane = InputPane.GetForCurrentView();
+                inputPane.Showing += (_, args) =>
+                {
+                    var info = new { keyboardHeight = args.OccludedRect.Height };
+                    PostEvent("keyboardWillShow", info);
+                    PostEvent("keyboardDidShow", info);
+                };
+                inputPane.Hiding += (_, __) =>
+                {
+                    PostEvent("keyboardWillHide", new { });
+                    PostEvent("keyboardDidHide", new { });
+                };
+            }
+            catch { }
+
+            try
+            {
+                _dataTransferManager = DataTransferManager.GetForCurrentView();
+                _dataTransferManager.DataRequested += DataTransferManager_DataRequested;
+            }
+            catch { }
+        }
+
+        private void Window_VisibilityChanged(object sender, VisibilityChangedEventArgs e)
+        {
+            var data = new { isActive = e.Visible };
+            PostEvent("appStateChange", data);
+            PostEvent(e.Visible ? "resume" : "pause", new { });
+        }
+
         private async void InitializeWebView()
         {
             try
@@ -94,6 +176,8 @@ namespace UWP.js
                 _coreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
                 _coreWebView2.WebResourceRequested += WebView2_WebResourceRequested;
                 _coreWebView2.NavigationCompleted += CoreWebView2_NavigationCompleted;
+                _coreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
+                _coreWebView2.PermissionRequested += CoreWebView2_PermissionRequested;
 
                 var indexFile = await webContentFolder.TryGetItemAsync("index.html") as StorageFile;
                 if (indexFile == null && needsIndex)
@@ -108,6 +192,176 @@ namespace UWP.js
             {
                 await new MessageDialog($"Failed to initialize WebView2: {ex.Message}").ShowAsync();
             }
+        }
+
+        private async void CoreWebView2_NewWindowRequested(CoreWebView2 sender, CoreWebView2NewWindowRequestedEventArgs args)
+        {
+            args.Handled = true;
+            if (!string.IsNullOrWhiteSpace(args.Uri))
+            {
+                await ShowBrowserOverlayAsync(args.Uri);
+            }
+        }
+
+        private void CoreWebView2_PermissionRequested(CoreWebView2 sender, CoreWebView2PermissionRequestedEventArgs args)
+        {
+            args.State = CoreWebView2PermissionState.Allow;
+        }
+
+        public async Task RunOnUiThreadAsync(Func<Task> action)
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, async () =>
+            {
+                try
+                {
+                    await action();
+                    tcs.SetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            });
+            await tcs.Task;
+        }
+
+        public async Task ShowBrowserOverlayAsync(string url)
+        {
+            await RunOnUiThreadAsync(async () =>
+            {
+                BrowserOverlayHost.Children.Clear();
+                BrowserOverlayHost.Visibility = Visibility.Visible;
+
+                var panel = new Windows.UI.Xaml.Controls.Grid
+                {
+                    Width = 640,
+                    Height = 640,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Background = new SolidColorBrush(Colors.Black)
+                };
+                panel.RowDefinitions.Add(new Windows.UI.Xaml.Controls.RowDefinition { Height = new GridLength(48) });
+                panel.RowDefinitions.Add(new Windows.UI.Xaml.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+                var topBar = new Windows.UI.Xaml.Controls.Grid
+                {
+                    Background = new SolidColorBrush(Color.FromArgb(255, 24, 24, 24))
+                };
+                var closeButton = new Windows.UI.Xaml.Controls.Button
+                {
+                    Content = "Close",
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 12, 0)
+                };
+                closeButton.Click += async (_, __) => { await CloseBrowserOverlayAsync(); };
+                topBar.Children.Add(closeButton);
+                Windows.UI.Xaml.Controls.Grid.SetRow(topBar, 0);
+                panel.Children.Add(topBar);
+
+                _browserWebView = new Microsoft.UI.Xaml.Controls.WebView2();
+                Windows.UI.Xaml.Controls.Grid.SetRow(_browserWebView, 1);
+                panel.Children.Add(_browserWebView);
+
+                BrowserOverlayHost.Children.Add(panel);
+
+                await _browserWebView.EnsureCoreWebView2Async();
+                _browserWebView.CoreWebView2.NavigationCompleted += (_, __) =>
+                {
+                    PostEvent("browserPageLoaded", new { url = _browserWebView.Source?.ToString() });
+                };
+                _browserWebView.CoreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
+                _browserWebView.Source = new Uri(url);
+            });
+        }
+
+        public async Task CloseBrowserOverlayAsync()
+        {
+            await RunOnUiThreadAsync(() =>
+            {
+                BrowserOverlayHost.Children.Clear();
+                BrowserOverlayHost.Visibility = Visibility.Collapsed;
+                _browserWebView = null;
+                PostEvent("browserFinished", new { });
+                return Task.CompletedTask;
+            });
+        }
+
+        public async Task ShowInAppToastAsync(string title, string text, int durationMs = 2500)
+        {
+            await RunOnUiThreadAsync(() =>
+            {
+                _toastTimer?.Stop();
+                ToastOverlayHost.Children.Clear();
+
+                var border = new Windows.UI.Xaml.Controls.Border
+                {
+                    MaxWidth = 720,
+                    Background = new SolidColorBrush(Color.FromArgb(235, 24, 24, 24)),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(20, 14, 20, 14),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(24)
+                };
+
+                var stack = new Windows.UI.Xaml.Controls.StackPanel();
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    stack.Children.Add(new Windows.UI.Xaml.Controls.TextBlock
+                    {
+                        Text = title,
+                        Foreground = new SolidColorBrush(Colors.White),
+                        FontSize = 18,
+                        FontWeight = Windows.UI.Text.FontWeights.SemiBold,
+                        TextWrapping = TextWrapping.Wrap
+                    });
+                }
+                stack.Children.Add(new Windows.UI.Xaml.Controls.TextBlock
+                {
+                    Text = text ?? "",
+                    Foreground = new SolidColorBrush(Colors.White),
+                    FontSize = 16,
+                    TextWrapping = TextWrapping.Wrap
+                });
+
+                border.Child = stack;
+                ToastOverlayHost.Children.Add(border);
+
+                _toastTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Math.Max(800, durationMs)) };
+                _toastTimer.Tick += (_, __) =>
+                {
+                    _toastTimer.Stop();
+                    ToastOverlayHost.Children.Clear();
+                };
+                _toastTimer.Start();
+                return Task.CompletedTask;
+            });
+        }
+
+        private void DataTransferManager_DataRequested(DataTransferManager sender, DataRequestedEventArgs args)
+        {
+            var data = _pendingShareData ?? new Dictionary<string, object>();
+            var title = GetObjectString(data, "title") ?? "Share";
+            var text = GetObjectString(data, "text");
+            var url = GetObjectString(data, "url");
+
+            args.Request.Data.Properties.Title = title;
+            if (!string.IsNullOrEmpty(text))
+            {
+                args.Request.Data.SetText(text);
+            }
+            if (!string.IsNullOrEmpty(url) && Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                args.Request.Data.SetWebLink(uri);
+            }
+        }
+
+        public void ShowShareUi(Dictionary<string, object> data)
+        {
+            _pendingShareData = data;
+            DataTransferManager.ShowShareUI();
         }
 
         private async void CoreWebView2_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
@@ -144,6 +398,7 @@ namespace UWP.js
         private void App_BackRequested(object sender, BackRequestedEventArgs e)
         {
             e.Handled = true;
+            PostEvent("backButton", new { canGoBack = _coreWebView2 != null && _coreWebView2.CanGoBack });
         }
 
         private void CoreWindow_SizeChanged(Windows.UI.Core.CoreWindow sender, Windows.UI.Core.WindowSizeChangedEventArgs args)
@@ -305,6 +560,7 @@ namespace UWP.js
 
         public void HandleProtocolUri(Uri uri)
         {
+            _lastProtocolUri = uri;
             if (_coreWebView2 == null)
             {
                 _pendingProtocolUri = uri;
@@ -332,6 +588,69 @@ namespace UWP.js
 
             var payload = JsonSerializer.Serialize(envelope);
             _coreWebView2.PostWebMessageAsString(payload);
+        }
+
+        public void PostEvent(string eventName, object data)
+        {
+            try
+            {
+                if (_coreWebView2 == null)
+                {
+                    return;
+                }
+
+                if (!Dispatcher.HasThreadAccess)
+                {
+                    var _ = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => PostEvent(eventName, data));
+                    return;
+                }
+
+                var envelope = new Dictionary<string, object>
+                {
+                    ["event"] = eventName,
+                    ["data"] = data
+                };
+                _coreWebView2.PostWebMessageAsString(JsonSerializer.Serialize(envelope));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"PostEvent failed for {eventName}: {ex.Message}");
+            }
+        }
+
+        private static string GetObjectString(Dictionary<string, object> map, string key)
+        {
+            return map != null && map.TryGetValue(key, out var value) ? value?.ToString() : null;
+        }
+
+        private static string MapOrientation(DisplayOrientations orientation)
+        {
+            switch (orientation)
+            {
+                case DisplayOrientations.Portrait:
+                    return "portrait-primary";
+                case DisplayOrientations.PortraitFlipped:
+                    return "portrait-secondary";
+                case DisplayOrientations.LandscapeFlipped:
+                    return "landscape-secondary";
+                case DisplayOrientations.Landscape:
+                default:
+                    return "landscape-primary";
+            }
+        }
+
+        private static object BuildNetworkStatus()
+        {
+            var profile = NetworkInformation.GetInternetConnectionProfile();
+            var connected = profile != null && profile.GetNetworkConnectivityLevel() == NetworkConnectivityLevel.InternetAccess;
+            var type = "none";
+            if (connected)
+            {
+                if (profile.IsWlanConnectionProfile) type = "wifi";
+                else if (profile.IsWwanConnectionProfile) type = "cellular";
+                else type = "unknown";
+            }
+            return new { connected = connected, connectionType = type };
         }
 
         private static Dictionary<string, string> ParseQuery(Uri uri)
@@ -389,6 +708,20 @@ namespace UWP.js
             private static string downloadLocation = null;
             private bool isCursorHidden = false;
             public CoreCursor hiddenCursor;
+            private const string SecureResourcePrefix = "capacitor-xbox";
+            private static readonly Dictionary<string, GeoWatchRegistration> GeoWatches = new Dictionary<string, GeoWatchRegistration>();
+            private static Accelerometer _accelerometer;
+            private static Inclinometer _inclinometer;
+            private static Gyrometer _gyrometer;
+            private static Compass _compass;
+            private static bool _motionStarted;
+            private static string _keyboardResizeMode = "native";
+
+            private class GeoWatchRegistration
+            {
+                public Geolocator Locator { get; set; }
+                public TypedEventHandler<Geolocator, PositionChangedEventArgs> Handler { get; set; }
+            }
 
 
             public UwpNativeMethods(CoreWebView2 coreWebView2, MainPage mainPage)
@@ -414,6 +747,237 @@ namespace UWP.js
                     return result?.ToString();
                 }
                 throw new MissingMethodException($"Method {methodName} not found.");
+            }
+
+            private static string Ok(object data = null)
+            {
+                return JsonSerializer.Serialize(new { completed = true, data = data });
+            }
+
+            private static string Fail(string error)
+            {
+                return JsonSerializer.Serialize(new { completed = false, error = error });
+            }
+
+            private static Dictionary<string, JsonElement> ParseOptions(string optionsJson)
+            {
+                if (string.IsNullOrWhiteSpace(optionsJson) || optionsJson == "null")
+                {
+                    return new Dictionary<string, JsonElement>();
+                }
+
+                try
+                {
+                    return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(optionsJson) ?? new Dictionary<string, JsonElement>();
+                }
+                catch
+                {
+                    return new Dictionary<string, JsonElement>();
+                }
+            }
+
+            private static string GetString(Dictionary<string, JsonElement> options, string key, string fallback = null)
+            {
+                if (!options.TryGetValue(key, out var value) || value.ValueKind == JsonValueKind.Null || value.ValueKind == JsonValueKind.Undefined)
+                {
+                    return fallback;
+                }
+                if (value.ValueKind == JsonValueKind.String)
+                {
+                    return value.GetString();
+                }
+                return value.ToString();
+            }
+
+            private static bool GetBool(Dictionary<string, JsonElement> options, string key, bool fallback = false)
+            {
+                if (!options.TryGetValue(key, out var value))
+                {
+                    return fallback;
+                }
+                if (value.ValueKind == JsonValueKind.True) return true;
+                if (value.ValueKind == JsonValueKind.False) return false;
+                return bool.TryParse(value.ToString(), out var result) ? result : fallback;
+            }
+
+            private static int GetInt(Dictionary<string, JsonElement> options, string key, int fallback = 0)
+            {
+                if (!options.TryGetValue(key, out var value))
+                {
+                    return fallback;
+                }
+                if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
+                {
+                    return number;
+                }
+                return int.TryParse(value.ToString(), out var result) ? result : fallback;
+            }
+
+            private static double GetDouble(Dictionary<string, JsonElement> options, string key, double fallback = 0)
+            {
+                if (!options.TryGetValue(key, out var value))
+                {
+                    return fallback;
+                }
+                if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+                {
+                    return number;
+                }
+                return double.TryParse(value.ToString(), out var result) ? result : fallback;
+            }
+
+            private static Dictionary<string, object> ToObjectDictionary(Dictionary<string, JsonElement> options)
+            {
+                var result = new Dictionary<string, object>();
+                foreach (var pair in options)
+                {
+                    switch (pair.Value.ValueKind)
+                    {
+                        case JsonValueKind.String:
+                            result[pair.Key] = pair.Value.GetString();
+                            break;
+                        case JsonValueKind.Number:
+                            result[pair.Key] = pair.Value.TryGetInt64(out var l) ? (object)l : pair.Value.GetDouble();
+                            break;
+                        case JsonValueKind.True:
+                        case JsonValueKind.False:
+                            result[pair.Key] = pair.Value.GetBoolean();
+                            break;
+                        default:
+                            result[pair.Key] = pair.Value.ToString();
+                            break;
+                    }
+                }
+                return result;
+            }
+
+            private static string GetBaseFolderPath(string directory)
+            {
+                var normalized = (directory ?? "DATA").ToUpperInvariant();
+                if (normalized == "CACHE")
+                {
+                    return ApplicationData.Current.LocalCacheFolder.Path;
+                }
+                if (normalized == "TEMPORARY" || normalized == "TEMP")
+                {
+                    return ApplicationData.Current.TemporaryFolder.Path;
+                }
+                return ApplicationData.Current.LocalFolder.Path;
+            }
+
+            private static string ResolveFsPath(Dictionary<string, JsonElement> options, string pathKey = "path")
+            {
+                var path = GetString(options, pathKey, "");
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    return GetBaseFolderPath(GetString(options, "directory"));
+                }
+                path = path.Replace('/', Path.DirectorySeparatorChar);
+                if (Path.IsPathRooted(path))
+                {
+                    return path;
+                }
+                return Path.Combine(GetBaseFolderPath(GetString(options, "directory")), path);
+            }
+
+            private static long ToUnixMs(DateTimeOffset date)
+            {
+                return date.ToUnixTimeMilliseconds();
+            }
+
+            private static string GuessMime(string path)
+            {
+                var ext = Path.GetExtension(path)?.ToLowerInvariant();
+                switch (ext)
+                {
+                    case ".jpg":
+                    case ".jpeg":
+                        return "image/jpeg";
+                    case ".png":
+                        return "image/png";
+                    case ".gif":
+                        return "image/gif";
+                    case ".mp4":
+                        return "video/mp4";
+                    case ".webm":
+                        return "video/webm";
+                    case ".pdf":
+                        return "application/pdf";
+                    case ".txt":
+                        return "text/plain";
+                    default:
+                        return "application/octet-stream";
+                }
+            }
+
+            private static string GetFormat(string path)
+            {
+                var ext = Path.GetExtension(path);
+                return string.IsNullOrEmpty(ext) ? "" : ext.TrimStart('.').ToLowerInvariant();
+            }
+
+            private static async Task<StorageFile> CopyToLocalAsync(StorageFile source)
+            {
+                var local = ApplicationData.Current.LocalFolder;
+                return await source.CopyAsync(local, source.Name, NameCollisionOption.GenerateUniqueName);
+            }
+
+            private static async Task<object> BuildPhotoResultAsync(StorageFile file, string resultType)
+            {
+                var format = GetFormat(file.Name);
+                var normalized = (resultType ?? "uri").ToLowerInvariant();
+                if (normalized == "base64")
+                {
+                    var buffer = await FileIO.ReadBufferAsync(file);
+                    return new { base64String = Convert.ToBase64String(buffer.ToArray()), format = format, saved = true };
+                }
+                if (normalized == "dataurl" || normalized == "dataUrl")
+                {
+                    var buffer = await FileIO.ReadBufferAsync(file);
+                    var mime = GuessMime(file.Name);
+                    return new { dataUrl = $"data:{mime};base64,{Convert.ToBase64String(buffer.ToArray())}", format = format, saved = true };
+                }
+                return new
+                {
+                    path = file.Path,
+                    webPath = $"http://localdata/{Uri.EscapeDataString(file.Name)}",
+                    format = format,
+                    saved = true
+                };
+            }
+
+            private static async Task<object> BuildMediaResultAsync(StorageFile file)
+            {
+                var props = await file.GetBasicPropertiesAsync();
+                return new
+                {
+                    path = file.Path,
+                    webPath = $"http://localdata/{Uri.EscapeDataString(file.Name)}",
+                    name = file.Name,
+                    type = GuessMime(file.Name),
+                    size = props.Size,
+                    duration = 0
+                };
+            }
+
+            private static object BuildPosition(Geoposition position)
+            {
+                var coord = position.Coordinate;
+                var point = coord.Point.Position;
+                return new
+                {
+                    timestamp = ToUnixMs(coord.Timestamp),
+                    coords = new
+                    {
+                        latitude = point.Latitude,
+                        longitude = point.Longitude,
+                        accuracy = coord.Accuracy,
+                        altitude = point.Altitude,
+                        altitudeAccuracy = coord.AltitudeAccuracy,
+                        speed = coord.Speed,
+                        heading = coord.Heading
+                    }
+                };
             }
 
             public Task<string> exampleMethod(string param1, string param2)
@@ -1239,6 +1803,1434 @@ namespace UWP.js
                 {
                     return JsonSerializer.Serialize(new { completed = false, error = ex.Message });
                 }
+            }
+
+            public async Task<string> showActionSheet(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var title = GetString(options, "title", "Choose");
+                    var dialog = new MessageDialog(GetString(options, "message", ""), title);
+                    var buttons = options.TryGetValue("options", out var opts) && opts.ValueKind == JsonValueKind.Array
+                        ? opts.EnumerateArray().ToArray()
+                        : Array.Empty<JsonElement>();
+
+                    for (var i = 0; i < buttons.Length; i++)
+                    {
+                        var item = buttons[i];
+                        var text = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("title", out var titleProp)
+                            ? titleProp.GetString()
+                            : item.ToString();
+                        dialog.Commands.Add(new UICommand(text ?? $"Option {i + 1}", null, i));
+                    }
+
+                    if (!dialog.Commands.Any())
+                    {
+                        dialog.Commands.Add(new UICommand("OK", null, 0));
+                    }
+
+                    var result = await dialog.ShowAsync();
+                    return Ok(new { index = Convert.ToInt32(result.Id) });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> getAppInfo()
+            {
+                try
+                {
+                    var package = Package.Current;
+                    var version = package.Id.Version;
+                    var versionString = $"{version.Major}.{version.Minor}.{version.Build}.{version.Revision}";
+                    return Task.FromResult(Ok(new
+                    {
+                        name = package.DisplayName,
+                        id = package.Id.Name,
+                        version = versionString,
+                        build = version.Revision.ToString()
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> getAppState()
+            {
+                return Task.FromResult(Ok(new { isActive = Window.Current.Visible }));
+            }
+
+            public Task<string> getLaunchUrl()
+            {
+                return Task.FromResult(Ok(_mainPage._lastProtocolUri == null ? null : new { url = _mainPage._lastProtocolUri.AbsoluteUri }));
+            }
+
+            public Task<string> minimizeApp()
+            {
+                return Task.FromResult(Fail("UWP/Xbox does not expose a reliable minimize API for this host."));
+            }
+
+            public Task<string> getAppLanguage()
+            {
+                var language = GlobalizationPreferences.Languages.FirstOrDefault() ?? "en-US";
+                return Task.FromResult(Ok(new { code = language }));
+            }
+
+            public Task<string> toggleBackButtonHandler(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public async Task<string> openBrowser(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var url = GetString(options, "url");
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        return Fail("url is required");
+                    }
+                    await _mainPage.ShowBrowserOverlayAsync(url);
+                    return Ok(new { url = url });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> closeBrowser()
+            {
+                try
+                {
+                    await _mainPage.CloseBrowserOverlayAsync();
+                    return Ok(true);
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> writeClipboard(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var text = GetString(options, "string") ?? GetString(options, "text") ?? GetString(options, "url") ?? "";
+                    var package = new DataPackage();
+                    package.SetText(text);
+                    Clipboard.SetContent(package);
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public async Task<string> readClipboard()
+            {
+                try
+                {
+                    var content = Clipboard.GetContent();
+                    if (content.Contains(StandardDataFormats.Text))
+                    {
+                        var text = await content.GetTextAsync();
+                        return Ok(new { type = "text/plain", value = text });
+                    }
+                    return Ok(new { type = "text/plain", value = "" });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> getDeviceId()
+            {
+                var settings = ApplicationData.Current.LocalSettings;
+                var id = settings.Values["capacitor_xbox_device_id"] as string;
+                if (string.IsNullOrEmpty(id))
+                {
+                    id = Guid.NewGuid().ToString();
+                    settings.Values["capacitor_xbox_device_id"] = id;
+                }
+                return Task.FromResult(Ok(new { identifier = id }));
+            }
+
+            public Task<string> getDeviceInfo()
+            {
+                try
+                {
+                    var info = new Windows.Security.ExchangeActiveSyncProvisioning.EasClientDeviceInformation();
+                    var deviceFamily = AnalyticsInfo.VersionInfo.DeviceFamily;
+                    return Task.FromResult(Ok(new
+                    {
+                        name = info.FriendlyName,
+                        model = info.SystemProductName,
+                        platform = deviceFamily.Equals("Windows.Xbox", StringComparison.OrdinalIgnoreCase) ? "xbox" : "windows",
+                        operatingSystem = "windows",
+                        osVersion = Environment.OSVersion.Version.ToString(),
+                        manufacturer = info.SystemManufacturer,
+                        isVirtual = false,
+                        webViewVersion = "WebView2",
+                        memUsed = Windows.System.MemoryManager.AppMemoryUsage
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> getBatteryInfo()
+            {
+                try
+                {
+                    var level = PowerManager.RemainingChargePercent;
+                    var charging = PowerManager.PowerSupplyStatus == PowerSupplyStatus.Adequate ||
+                                   PowerManager.PowerSupplyStatus == PowerSupplyStatus.NotPresent;
+                    return Task.FromResult(Ok(new { batteryLevel = level / 100.0, isCharging = charging }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> getLanguageCode()
+            {
+                var language = GlobalizationPreferences.Languages.FirstOrDefault() ?? "en-US";
+                return Task.FromResult(Ok(new { value = language.Split('-')[0] }));
+            }
+
+            public Task<string> getLanguageTag()
+            {
+                var language = GlobalizationPreferences.Languages.FirstOrDefault() ?? "en-US";
+                return Task.FromResult(Ok(new { value = language }));
+            }
+
+            public async Task<string> promptDialog(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var textBox = new Windows.UI.Xaml.Controls.TextBox
+                    {
+                        Text = GetString(options, "inputText", ""),
+                        PlaceholderText = GetString(options, "inputPlaceholder", "")
+                    };
+                    var dialog = new Windows.UI.Xaml.Controls.ContentDialog
+                    {
+                        Title = GetString(options, "title", "Prompt"),
+                        Content = textBox,
+                        PrimaryButtonText = GetString(options, "okButtonTitle", "OK"),
+                        SecondaryButtonText = GetString(options, "cancelButtonTitle", "Cancel")
+                    };
+                    var result = await dialog.ShowAsync();
+                    return Ok(new { value = textBox.Text, cancelled = result != Windows.UI.Xaml.Controls.ContentDialogResult.Primary });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> showToast(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    await _mainPage.ShowInAppToastAsync(
+                        GetString(options, "title", ""),
+                        GetString(options, "text", GetString(options, "message", "")),
+                        GetInt(options, "duration", 2500)
+                    );
+                    return Ok(true);
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> getNetworkStatus()
+            {
+                try
+                {
+                    return Task.FromResult(Ok(BuildNetworkStatus()));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> getScreenOrientation()
+            {
+                try
+                {
+                    var display = DisplayInformation.GetForCurrentView();
+                    return Task.FromResult(Ok(new { type = MapOrientation(display.CurrentOrientation) }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> lockScreenOrientation(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var requested = GetString(options, "orientation", GetString(options, "type", "landscape-primary"));
+                    DisplayInformation.AutoRotationPreferences =
+                        requested != null && requested.StartsWith("portrait", StringComparison.OrdinalIgnoreCase)
+                            ? DisplayOrientations.Portrait
+                            : DisplayOrientations.Landscape;
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> unlockScreenOrientation()
+            {
+                DisplayInformation.AutoRotationPreferences = DisplayOrientations.None;
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> isScreenReaderEnabled()
+            {
+                try
+                {
+                    var enabled = Windows.UI.Xaml.Automation.Peers.AutomationPeer.ListenerExists(
+                        Windows.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
+                    return Task.FromResult(Ok(new { value = enabled }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public async Task<string> speak(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var text = GetString(options, "value", GetString(options, "text", ""));
+                    using (var synth = new SpeechSynthesizer())
+                    {
+                        var stream = await synth.SynthesizeTextToStreamAsync(text);
+                        await _mainPage.RunOnUiThreadAsync(() =>
+                        {
+                            _mainPage.SpeechPlayer.SetSource(stream, stream.ContentType);
+                            _mainPage.SpeechPlayer.Play();
+                            return Task.CompletedTask;
+                        });
+                    }
+                    return Ok(true);
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> canShare(string optionsJson)
+            {
+                return Task.FromResult(Ok(new { value = _mainPage._dataTransferManager != null }));
+            }
+
+            public Task<string> share(string optionsJson)
+            {
+                try
+                {
+                    if (_mainPage._dataTransferManager == null)
+                    {
+                        return Task.FromResult(Fail("UWP share UI is not available for this view."));
+                    }
+                    _mainPage.ShowShareUi(ToObjectDictionary(ParseOptions(optionsJson)));
+                    return Task.FromResult(Ok(new { activityType = "share" }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> showSplashScreen(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> hideSplashScreen(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> setStatusBarStyle(string optionsJson) => Task.FromResult(Fail("StatusBar is not available on desktop UWP/Xbox."));
+            public Task<string> setStatusBarBackgroundColor(string optionsJson) => Task.FromResult(Fail("StatusBar is not available on desktop UWP/Xbox."));
+            public Task<string> showStatusBar(string optionsJson) => Task.FromResult(Fail("StatusBar is not available on desktop UWP/Xbox."));
+            public Task<string> hideStatusBar(string optionsJson) => Task.FromResult(Fail("StatusBar is not available on desktop UWP/Xbox."));
+            public Task<string> getStatusBarInfo() => Task.FromResult(Fail("StatusBar is not available on desktop UWP/Xbox."));
+            public Task<string> setStatusBarOverlaysWebView(string optionsJson) => Task.FromResult(Fail("StatusBar is not available on desktop UWP/Xbox."));
+
+            public async Task<string> scheduleLocalNotifications(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var scheduled = new List<object>();
+                    if (options.TryGetValue("notifications", out var notifications) && notifications.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var notification in notifications.EnumerateArray())
+                        {
+                            var id = notification.TryGetProperty("id", out var idProp) ? idProp.ToString() : DateTimeOffset.Now.ToUnixTimeMilliseconds().ToString();
+                            var title = notification.TryGetProperty("title", out var titleProp) ? titleProp.GetString() : "";
+                            var body = notification.TryGetProperty("body", out var bodyProp) ? bodyProp.GetString() : "";
+                            await ShowNotification(JsonSerializer.Serialize(new
+                            {
+                                Id = id,
+                                Title = title,
+                                Message = body
+                            }));
+                            scheduled.Add(new { id = id });
+                        }
+                    }
+                    return Ok(new { notifications = scheduled });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> getPendingLocalNotifications()
+            {
+                return Task.FromResult(Ok(new { notifications = Array.Empty<object>() }));
+            }
+
+            public Task<string> registerLocalNotificationActionTypes(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> cancelLocalNotifications(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> areLocalNotificationsEnabled()
+            {
+                return Task.FromResult(Ok(new { value = true }));
+            }
+
+            public Task<string> getDeliveredNotifications()
+            {
+                return Task.FromResult(Ok(new { notifications = Array.Empty<object>() }));
+            }
+
+            public Task<string> removeDeliveredNotifications(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> removeAllDeliveredNotifications()
+            {
+                ToastNotificationManagerCompat.History.Clear();
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> createNotificationChannel(string channelJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> deleteNotificationChannel(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> listNotificationChannels()
+            {
+                return Task.FromResult(Ok(new { channels = Array.Empty<object>() }));
+            }
+
+            public Task<string> checkNotificationPermissions()
+            {
+                return Task.FromResult(Ok(new { display = "granted" }));
+            }
+
+            public Task<string> requestNotificationPermissions()
+            {
+                return Task.FromResult(Ok(new { display = "granted" }));
+            }
+
+            public Task<string> checkExactNotificationSetting()
+            {
+                return Task.FromResult(Ok(new { exact_alarm = "granted" }));
+            }
+
+            public Task<string> changeExactNotificationSetting()
+            {
+                return Task.FromResult(Ok(new { exact_alarm = "granted" }));
+            }
+
+            public async Task<string> takePhoto(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var ui = new CameraCaptureUI();
+                    ui.PhotoSettings.Format = CameraCaptureUIPhotoFormat.Jpeg;
+                    var captured = await ui.CaptureFileAsync(CameraCaptureUIMode.Photo);
+                    if (captured == null)
+                    {
+                        return Fail("No photo captured.");
+                    }
+                    var local = await CopyToLocalAsync(captured);
+                    return Ok(await BuildPhotoResultAsync(local, GetString(options, "resultType", "uri")));
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> recordVideo(string optionsJson)
+            {
+                try
+                {
+                    var ui = new CameraCaptureUI();
+                    ui.VideoSettings.Format = CameraCaptureUIVideoFormat.Mp4;
+                    var captured = await ui.CaptureFileAsync(CameraCaptureUIMode.Video);
+                    if (captured == null)
+                    {
+                        return Fail("No video captured.");
+                    }
+                    var local = await CopyToLocalAsync(captured);
+                    return Ok(await BuildMediaResultAsync(local));
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> playVideo(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = GetString(options, "path", GetString(options, "url"));
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        return Fail("path or url is required");
+                    }
+                    if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                    {
+                        await Launcher.LaunchUriAsync(uri);
+                    }
+                    else
+                    {
+                        var file = await StorageFile.GetFileFromPathAsync(path);
+                        await Launcher.LaunchFileAsync(file);
+                    }
+                    return Ok(true);
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> chooseMediaFromGallery(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var picker = new FileOpenPicker
+                    {
+                        SuggestedStartLocation = PickerLocationId.PicturesLibrary
+                    };
+                    var mediaType = (GetString(options, "mediaType", "all") ?? "all").ToLowerInvariant();
+                    if (mediaType == "photos" || mediaType == "all")
+                    {
+                        picker.FileTypeFilter.Add(".jpg");
+                        picker.FileTypeFilter.Add(".jpeg");
+                        picker.FileTypeFilter.Add(".png");
+                        picker.FileTypeFilter.Add(".gif");
+                    }
+                    if (mediaType == "videos" || mediaType == "all")
+                    {
+                        picker.FileTypeFilter.Add(".mp4");
+                        picker.FileTypeFilter.Add(".mov");
+                        picker.FileTypeFilter.Add(".wmv");
+                    }
+
+                    var multiple = GetBool(options, "multiple", false);
+                    var files = multiple
+                        ? (await picker.PickMultipleFilesAsync()).ToArray()
+                        : new[] { await picker.PickSingleFileAsync() }.Where(f => f != null).ToArray();
+
+                    var photos = new List<object>();
+                    foreach (var file in files)
+                    {
+                        var local = await CopyToLocalAsync(file);
+                        photos.Add(await BuildPhotoResultAsync(local, GetString(options, "resultType", "uri")));
+                    }
+
+                    return Ok(new { photos = photos });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> checkCameraPermissions(string optionsJson)
+            {
+                return Task.FromResult(Ok(new { camera = "granted", photos = "granted" }));
+            }
+
+            public Task<string> requestCameraPermissions(string optionsJson)
+            {
+                return Task.FromResult(Ok(new { camera = "granted", photos = "granted" }));
+            }
+
+            public async Task<string> filesystemReadFile(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = ResolveFsPath(options);
+                    var encoding = (GetString(options, "encoding") ?? "").ToLowerInvariant();
+                    if (encoding == "utf8" || encoding == "utf-8")
+                    {
+                        return Ok(new { data = await File.ReadAllTextAsync(path), encoding = "utf8" });
+                    }
+                    return Ok(new { data = Convert.ToBase64String(await File.ReadAllBytesAsync(path)), encoding = "base64" });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> filesystemReadFileInChunks(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = ResolveFsPath(options);
+                    var chunkSize = Math.Max(1024, GetInt(options, "chunkSize", 64 * 1024));
+                    var chunks = new List<object>();
+                    using (var stream = File.OpenRead(path))
+                    {
+                        var buffer = new byte[chunkSize];
+                        int read;
+                        while ((read = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        {
+                            var slice = new byte[read];
+                            Array.Copy(buffer, slice, read);
+                            chunks.Add(new { data = Convert.ToBase64String(slice) });
+                        }
+                    }
+                    return Ok(new { chunks = chunks });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> filesystemWriteFile(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = ResolveFsPath(options);
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    var data = GetString(options, "data", "");
+                    var encoding = (GetString(options, "encoding") ?? "").ToLowerInvariant();
+                    if (encoding == "utf8" || encoding == "utf-8")
+                    {
+                        await File.WriteAllTextAsync(path, data);
+                    }
+                    else
+                    {
+                        if (data.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            data = data.Substring(data.IndexOf(',') + 1);
+                        }
+                        await File.WriteAllBytesAsync(path, Convert.FromBase64String(data));
+                    }
+                    return Ok(new { uri = path });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> filesystemAppendFile(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = ResolveFsPath(options);
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    await File.AppendAllTextAsync(path, GetString(options, "data", ""));
+                    return Ok(true);
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> filesystemDeleteFile(string optionsJson)
+            {
+                try
+                {
+                    File.Delete(ResolveFsPath(ParseOptions(optionsJson)));
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemMkdir(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    Directory.CreateDirectory(ResolveFsPath(options));
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemRmdir(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = ResolveFsPath(options);
+                    Directory.Delete(path, GetBool(options, "recursive", false));
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemReaddir(string optionsJson)
+            {
+                try
+                {
+                    var path = ResolveFsPath(ParseOptions(optionsJson));
+                    var files = Directory.EnumerateFileSystemEntries(path)
+                        .Select(item =>
+                        {
+                            var isDir = Directory.Exists(item);
+                            var info = isDir ? null : new FileInfo(item);
+                            return new
+                            {
+                                name = Path.GetFileName(item),
+                                type = isDir ? "directory" : "file",
+                                uri = item,
+                                size = isDir ? 0 : info.Length,
+                                mtime = isDir ? 0 : ToUnixMs(info.LastWriteTimeUtc)
+                            };
+                        })
+                        .ToArray();
+                    return Task.FromResult(Ok(new { files = files }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemGetUri(string optionsJson)
+            {
+                try
+                {
+                    return Task.FromResult(Ok(new { uri = ResolveFsPath(ParseOptions(optionsJson)) }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemStat(string optionsJson)
+            {
+                try
+                {
+                    var path = ResolveFsPath(ParseOptions(optionsJson));
+                    if (Directory.Exists(path))
+                    {
+                        var dir = new DirectoryInfo(path);
+                        return Task.FromResult(Ok(new
+                        {
+                            type = "directory",
+                            size = 0,
+                            ctime = ToUnixMs(dir.CreationTimeUtc),
+                            mtime = ToUnixMs(dir.LastWriteTimeUtc),
+                            uri = path
+                        }));
+                    }
+                    var file = new FileInfo(path);
+                    return Task.FromResult(Ok(new
+                    {
+                        type = "file",
+                        size = file.Length,
+                        ctime = ToUnixMs(file.CreationTimeUtc),
+                        mtime = ToUnixMs(file.LastWriteTimeUtc),
+                        uri = path
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemRename(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var from = ResolveFsPath(options, "from");
+                    var to = ResolveFsPath(options, "to");
+                    Directory.CreateDirectory(Path.GetDirectoryName(to));
+                    if (Directory.Exists(from))
+                    {
+                        Directory.Move(from, to);
+                    }
+                    else
+                    {
+                        File.Move(from, to);
+                    }
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> filesystemCopy(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var from = ResolveFsPath(options, "from");
+                    var to = ResolveFsPath(options, "to");
+                    Directory.CreateDirectory(Path.GetDirectoryName(to));
+                    if (Directory.Exists(from))
+                    {
+                        CopyDirectory(from, to);
+                    }
+                    else
+                    {
+                        File.Copy(from, to, true);
+                    }
+                    return Task.FromResult(Ok(new { uri = to }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            private static void CopyDirectory(string sourceDir, string destDir)
+            {
+                Directory.CreateDirectory(destDir);
+                foreach (var file in Directory.GetFiles(sourceDir))
+                {
+                    File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), true);
+                }
+                foreach (var dir in Directory.GetDirectories(sourceDir))
+                {
+                    CopyDirectory(dir, Path.Combine(destDir, Path.GetFileName(dir)));
+                }
+            }
+
+            public async Task<string> fileTransferDownload(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var url = GetString(options, "url", GetString(options, "source"));
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        return Fail("url is required");
+                    }
+                    var path = ResolveFsPath(options);
+                    if (Directory.Exists(path))
+                    {
+                        path = Path.Combine(path, Path.GetFileName(new Uri(url).LocalPath));
+                    }
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+
+                    using (var response = await _mainPage._httpClient.GetAsync(new Uri(url), HttpCompletionOption.ResponseHeadersRead))
+                    {
+                        response.EnsureSuccessStatusCode();
+                        var total = response.Content.Headers.ContentLength ?? -1L;
+                        using (var input = await response.Content.ReadAsStreamAsync())
+                        using (var output = File.Open(path, FileMode.Create, FileAccess.Write))
+                        {
+                            var buffer = new byte[81920];
+                            long readTotal = 0;
+                            int read;
+                            while ((read = await input.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                            {
+                                await output.WriteAsync(buffer, 0, read);
+                                readTotal += read;
+                                _mainPage.PostEvent("fileTransferProgress", new
+                                {
+                                    url = url,
+                                    bytes = readTotal,
+                                    contentLength = total
+                                });
+                            }
+                        }
+                    }
+                    return Ok(new { path = path });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> fileTransferUpload(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var url = GetString(options, "url");
+                    var path = ResolveFsPath(options);
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        return Fail("url is required");
+                    }
+
+                    var method = new HttpMethod(GetString(options, "method", "POST"));
+                    var request = new HttpRequestMessage(method, new Uri(url));
+                    var bytes = await File.ReadAllBytesAsync(path);
+                    request.Content = new ByteArrayContent(bytes);
+                    request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(GuessMime(path));
+                    var response = await _mainPage._httpClient.SendAsync(request);
+                    var body = await response.Content.ReadAsStringAsync();
+                    return Ok(new { status = (int)response.StatusCode, response = body });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> openDocumentFromLocalPath(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = GetString(options, "path", GetString(options, "url"));
+                    var file = await StorageFile.GetFileFromPathAsync(path);
+                    var success = await Launcher.LaunchFileAsync(file);
+                    return success ? Ok(true) : Fail("Launcher could not open the file.");
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> openDocumentFromResources(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var path = GetString(options, "path", GetString(options, "fileName"));
+                    var folder = await Package.Current.InstalledLocation.GetFolderAsync("Assets");
+                    var wp = await folder.GetFolderAsync("WP");
+                    var file = await wp.GetFileAsync(path);
+                    var success = await Launcher.LaunchFileAsync(file);
+                    return success ? Ok(true) : Fail("Launcher could not open the resource.");
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> openDocumentFromUrl(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var url = GetString(options, "url");
+                    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                    {
+                        return Fail("A valid url is required.");
+                    }
+                    var success = await Launcher.LaunchUriAsync(uri);
+                    return success ? Ok(true) : Fail("Launcher could not open the URL.");
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> getCurrentPosition(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var access = await Geolocator.RequestAccessAsync();
+                    if (access == GeolocationAccessStatus.Denied)
+                    {
+                        return Fail("Location permission denied.");
+                    }
+                    var geolocator = new Geolocator
+                    {
+                        DesiredAccuracy = GetBool(options, "enableHighAccuracy", false)
+                            ? PositionAccuracy.High
+                            : PositionAccuracy.Default
+                    };
+                    var position = await geolocator.GetGeopositionAsync();
+                    return Ok(BuildPosition(position));
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> watchPosition(string optionsJson)
+            {
+                try
+                {
+                    var access = await Geolocator.RequestAccessAsync();
+                    if (access == GeolocationAccessStatus.Denied)
+                    {
+                        return Fail("Location permission denied.");
+                    }
+                    var id = Guid.NewGuid().ToString("N");
+                    var geolocator = new Geolocator { ReportInterval = 1000 };
+                    TypedEventHandler<Geolocator, PositionChangedEventArgs> handler = (_, args) =>
+                    {
+                        _mainPage.PostEvent($"geolocationWatch:{id}", BuildPosition(args.Position));
+                    };
+                    geolocator.PositionChanged += handler;
+                    GeoWatches[id] = new GeoWatchRegistration { Locator = geolocator, Handler = handler };
+                    return Ok(new { id = id });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> clearPositionWatch(string optionsJson)
+            {
+                try
+                {
+                    var id = GetString(ParseOptions(optionsJson), "id");
+                    if (!string.IsNullOrWhiteSpace(id) && GeoWatches.TryGetValue(id, out var watch))
+                    {
+                        watch.Locator.PositionChanged -= watch.Handler;
+                        GeoWatches.Remove(id);
+                    }
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public async Task<string> checkGeolocationPermissions(string optionsJson)
+            {
+                try
+                {
+                    var access = await Geolocator.RequestAccessAsync();
+                    var state = access == GeolocationAccessStatus.Allowed ? "granted" :
+                                access == GeolocationAccessStatus.Denied ? "denied" : "prompt";
+                    return Ok(new { location = state, coarseLocation = state });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> requestGeolocationPermissions(string optionsJson)
+            {
+                return await checkGeolocationPermissions(optionsJson);
+            }
+
+            public Task<string> keyboardShow()
+            {
+                try
+                {
+                    var shown = InputPane.GetForCurrentView().TryShow();
+                    return Task.FromResult(Ok(new { value = shown }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> keyboardHide()
+            {
+                try
+                {
+                    var hidden = InputPane.GetForCurrentView().TryHide();
+                    return Task.FromResult(Ok(new { value = hidden }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> keyboardSetResizeMode(string optionsJson)
+            {
+                _keyboardResizeMode = GetString(ParseOptions(optionsJson), "mode", "native");
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> keyboardGetResizeMode()
+            {
+                return Task.FromResult(Ok(new { mode = _keyboardResizeMode }));
+            }
+
+            public Task<string> keyboardSetStyle(string optionsJson)
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public Task<string> startMotionUpdates(string optionsJson)
+            {
+                try
+                {
+                    if (_motionStarted)
+                    {
+                        return Task.FromResult(Ok(true));
+                    }
+
+                    _accelerometer = Accelerometer.GetDefault();
+                    if (_accelerometer != null)
+                    {
+                        _accelerometer.ReportInterval = Math.Max(_accelerometer.MinimumReportInterval, 50);
+                        _accelerometer.ReadingChanged += (_, args) =>
+                        {
+                            var r = args.Reading;
+                            _mainPage.PostEvent("motionAccel", new
+                            {
+                                acceleration = new { x = r.AccelerationX, y = r.AccelerationY, z = r.AccelerationZ },
+                                accelerationIncludingGravity = new { x = r.AccelerationX, y = r.AccelerationY, z = r.AccelerationZ },
+                                interval = _accelerometer.ReportInterval
+                            });
+                        };
+                    }
+
+                    _inclinometer = Inclinometer.GetDefault();
+                    if (_inclinometer != null)
+                    {
+                        _inclinometer.ReportInterval = Math.Max(_inclinometer.MinimumReportInterval, 50);
+                        _inclinometer.ReadingChanged += (_, args) =>
+                        {
+                            var r = args.Reading;
+                            _mainPage.PostEvent("motionOrientation", new
+                            {
+                                alpha = r.YawDegrees,
+                                beta = r.PitchDegrees,
+                                gamma = r.RollDegrees
+                            });
+                        };
+                    }
+
+                    _gyrometer = Gyrometer.GetDefault();
+                    _compass = Compass.GetDefault();
+                    _motionStarted = true;
+                    return Task.FromResult(Ok(new
+                    {
+                        accelerometer = _accelerometer != null,
+                        inclinometer = _inclinometer != null,
+                        gyrometer = _gyrometer != null,
+                        compass = _compass != null
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> stopMotionUpdates()
+            {
+                try
+                {
+                    if (_accelerometer != null) _accelerometer.ReportInterval = 0;
+                    if (_inclinometer != null) _inclinometer.ReportInterval = 0;
+                    if (_gyrometer != null) _gyrometer.ReportInterval = 0;
+                    if (_compass != null) _compass.ReportInterval = 0;
+                    _motionStarted = false;
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> secureSet(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var key = GetString(options, "key");
+                    var value = GetString(options, "value", "");
+                    var service = GetString(options, "service", SecureResourcePrefix);
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        return Task.FromResult(Fail("key is required"));
+                    }
+
+                    var vault = new PasswordVault();
+                    try
+                    {
+                        foreach (var existing in vault.FindAllByResource(service).Where(c => c.UserName == key).ToArray())
+                        {
+                            vault.Remove(existing);
+                        }
+                    }
+                    catch { }
+                    vault.Add(new PasswordCredential(service, key, value));
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> secureGet(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var key = GetString(options, "key");
+                    var service = GetString(options, "service", SecureResourcePrefix);
+                    var credential = new PasswordVault().Retrieve(service, key);
+                    credential.RetrievePassword();
+                    return Task.FromResult(Ok(new { value = credential.Password }));
+                }
+                catch
+                {
+                    return Task.FromResult(Ok(new { value = (string)null }));
+                }
+            }
+
+            public Task<string> secureRemove(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var key = GetString(options, "key");
+                    var service = GetString(options, "service", SecureResourcePrefix);
+                    var vault = new PasswordVault();
+                    foreach (var existing in vault.FindAllByResource(service).Where(c => c.UserName == key).ToArray())
+                    {
+                        vault.Remove(existing);
+                    }
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> secureClear(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var service = GetString(options, "service", SecureResourcePrefix);
+                    var vault = new PasswordVault();
+                    foreach (var existing in vault.FindAllByResource(service).ToArray())
+                    {
+                        vault.Remove(existing);
+                    }
+                    return Task.FromResult(Ok(true));
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(Fail(ex.Message));
+                }
+            }
+
+            public Task<string> secureKeys(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var service = GetString(options, "service", SecureResourcePrefix);
+                    var keys = new PasswordVault().FindAllByResource(service).Select(c => c.UserName).Distinct().ToArray();
+                    return Task.FromResult(Ok(new { keys = keys }));
+                }
+                catch
+                {
+                    return Task.FromResult(Ok(new { keys = Array.Empty<string>() }));
+                }
+            }
+
+            public async Task<string> checkUserVerificationAvailability()
+            {
+                try
+                {
+                    var availability = await UserConsentVerifier.CheckAvailabilityAsync();
+                    return Ok(new
+                    {
+                        available = availability == UserConsentVerifierAvailability.Available,
+                        status = availability.ToString()
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> requestUserVerification(string optionsJson)
+            {
+                try
+                {
+                    var options = ParseOptions(optionsJson);
+                    var message = GetString(options, "message", "Verify your identity");
+                    var result = await UserConsentVerifier.RequestVerificationAsync(message);
+                    return Ok(new { verified = result == UserConsentVerificationResult.Verified, status = result.ToString() });
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public async Task<string> registerPushNotifications(string optionsJson)
+            {
+                try
+                {
+                    var channel = await PushNotificationChannelManager.CreatePushNotificationChannelForApplicationAsync();
+                    channel.PushNotificationReceived += (_, args) =>
+                    {
+                        args.Cancel = true;
+                        _mainPage.PostEvent("pushNotificationReceived", new
+                        {
+                            title = args.NotificationType.ToString(),
+                            body = args.RawNotification?.Content,
+                            data = args.NotificationType.ToString()
+                        });
+                    };
+                    var token = new { value = channel.Uri };
+                    _mainPage.PostEvent("pushRegistration", token);
+                    return Ok(token);
+                }
+                catch (Exception ex)
+                {
+                    _mainPage.PostEvent("pushRegistrationError", new { error = ex.Message });
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> unregisterPushNotifications()
+            {
+                return Task.FromResult(Ok(true));
+            }
+
+            public async Task<string> scanBarcode(string optionsJson)
+            {
+                try
+                {
+                    var scanner = await BarcodeScanner.GetDefaultAsync();
+                    if (scanner == null)
+                    {
+                        return Fail("No UWP POS barcode scanner is available. Camera barcode scanning is not implemented in this host.");
+                    }
+
+                    var claimed = await scanner.ClaimScannerAsync();
+                    if (claimed == null)
+                    {
+                        return Fail("Barcode scanner could not be claimed.");
+                    }
+
+                    var tcs = new TaskCompletionSource<object>();
+                    TypedEventHandler<ClaimedBarcodeScanner, BarcodeScannerDataReceivedEventArgs> handler = null;
+                    handler = (s, args) =>
+                    {
+                        var bytes = args.Report.ScanDataLabel?.ToArray() ?? Array.Empty<byte>();
+                        var text = Encoding.UTF8.GetString(bytes, 0, bytes.Length);
+                        tcs.TrySetResult(new
+                        {
+                            ScanResult = text,
+                            format = args.Report.ScanDataType.ToString()
+                        });
+                    };
+                    claimed.DataReceived += handler;
+                    claimed.IsDecodeDataEnabled = true;
+                    await claimed.EnableAsync();
+
+                    var completed = await Task.WhenAny(tcs.Task, Task.Delay(30000));
+                    claimed.DataReceived -= handler;
+                    claimed.Dispose();
+
+                    if (completed != tcs.Task)
+                    {
+                        return Fail("Barcode scan timed out.");
+                    }
+                    return Ok(await tcs.Task);
+                }
+                catch (Exception ex)
+                {
+                    return Fail(ex.Message);
+                }
+            }
+
+            public Task<string> checkBackgroundRunnerPermissions()
+            {
+                return Task.FromResult(Fail("Background JS runner is not available in this UWP/Xbox host."));
+            }
+
+            public Task<string> requestBackgroundRunnerPermissions(string optionsJson)
+            {
+                return Task.FromResult(Fail("Background JS runner is not available in this UWP/Xbox host."));
             }
 
             public Task<string> GetPlatform()

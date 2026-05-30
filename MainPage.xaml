@@ -9,7 +9,15 @@
     xmlns:controls="using:Microsoft.UI.Xaml.Controls"
     Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
 
-    <Grid>
+    <Grid x:Name="RootGrid">
         <controls:WebView2 x:Name="WebView2"/>
+        <Grid x:Name="BrowserOverlayHost"
+              Visibility="Collapsed"
+              Background="#99000000"/>
+        <Grid x:Name="ToastOverlayHost"
+              IsHitTestVisible="False"/>
+        <MediaElement x:Name="SpeechPlayer"
+                      Visibility="Collapsed"
+                      AutoPlay="False"/>
     </Grid>
 </Page>
