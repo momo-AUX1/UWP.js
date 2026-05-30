@@ -3565,7 +3565,7 @@ namespace UWP.js
                         await webView.EnsureCoreWebView2Async();
                         webView.CoreWebView2.WebMessageReceived += handler;
                         var navigationTcs = new TaskCompletionSource<bool>();
-                        EventHandler<CoreWebView2NavigationCompletedEventArgs> navigationHandler = null;
+                        TypedEventHandler<CoreWebView2, CoreWebView2NavigationCompletedEventArgs> navigationHandler = null;
                         navigationHandler = (sender, args) => navigationTcs.TrySetResult(true);
                         webView.CoreWebView2.NavigationCompleted += navigationHandler;
                         webView.CoreWebView2.NavigateToString("<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>");
