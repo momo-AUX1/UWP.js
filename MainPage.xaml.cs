@@ -3148,7 +3148,17 @@ namespace UWP.js
                     var key = GetString(options, "key");
                     var service = GetString(options, "service", SecureResourcePrefix);
                     var vault = new PasswordVault();
-                    foreach (var existing in vault.FindAllByResource(service).Where(c => c.UserName == key).ToArray())
+                    PasswordCredential[] credentials;
+                    try
+                    {
+                        credentials = vault.FindAllByResource(service).Where(c => c.UserName == key).ToArray();
+                    }
+                    catch
+                    {
+                        credentials = Array.Empty<PasswordCredential>();
+                    }
+
+                    foreach (var existing in credentials)
                     {
                         vault.Remove(existing);
                     }
@@ -3167,7 +3177,17 @@ namespace UWP.js
                     var options = ParseOptions(optionsJson);
                     var service = GetString(options, "service", SecureResourcePrefix);
                     var vault = new PasswordVault();
-                    foreach (var existing in vault.FindAllByResource(service).ToArray())
+                    PasswordCredential[] credentials;
+                    try
+                    {
+                        credentials = vault.FindAllByResource(service).ToArray();
+                    }
+                    catch
+                    {
+                        credentials = Array.Empty<PasswordCredential>();
+                    }
+
+                    foreach (var existing in credentials)
                     {
                         vault.Remove(existing);
                     }
