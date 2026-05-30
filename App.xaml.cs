@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.ApplicationModel;
 using Windows.ApplicationModel.Activation;
+using Windows.ApplicationModel.Background;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
 using Windows.UI.Xaml;
@@ -14,7 +15,6 @@ using Windows.UI.Xaml.Data;
 using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
-using Windows.ApplicationModel.Activation;
 using Windows.System.Profile;
 
 namespace UWP.js
@@ -106,6 +106,23 @@ namespace UWP.js
             Window.Current.Activate();
         }
 
+        protected override async void OnBackgroundActivated(BackgroundActivatedEventArgs args)
+        {
+            base.OnBackgroundActivated(args);
+            var deferral = args.TaskInstance.GetDeferral();
+            try
+            {
+                if (MainPage.Current != null)
+                {
+                    await MainPage.Current.DispatchConfiguredBackgroundRunnerAsync(args.TaskInstance.Task.Name);
+                }
+            }
+            finally
+            {
+                deferral.Complete();
+            }
+        }
+
         /// <summary>
         /// Invoked when Navigation to a certain page fails
         /// </summary>
@@ -123,11 +140,20 @@ namespace UWP.js
         /// </summary>
         /// <param name="sender">The source of the suspend request.</param>
         /// <param name="e">Details about the suspend request.</param>
-        private void OnSuspending(object sender, SuspendingEventArgs e)
+        private async void OnSuspending(object sender, SuspendingEventArgs e)
         {
             var deferral = e.SuspendingOperation.GetDeferral();
-            //TODO: Save application state and stop any background activity
-            deferral.Complete();
+            try
+            {
+                if (MainPage.Current != null)
+                {
+                    await MainPage.Current.RegisterConfiguredBackgroundRunnerAsync();
+                }
+            }
+            finally
+            {
+                deferral.Complete();
+            }
         }
     }
 }
