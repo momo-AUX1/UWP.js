@@ -114,7 +114,7 @@ namespace UWP.js
             {
                 if (MainPage.Current != null)
                 {
-                    await MainPage.Current.DispatchConfiguredBackgroundRunnerAsync(args.TaskInstance.Task.Name);
+                    await MainPage.Current.DispatchConfiguredScriptRunnerAsync(args.TaskInstance.Task.Name);
                 }
             }
             finally
@@ -147,7 +147,7 @@ namespace UWP.js
             {
                 if (MainPage.Current != null)
                 {
-                    await MainPage.Current.RegisterConfiguredBackgroundRunnerAsync();
+                    await MainPage.Current.RegisterConfiguredScriptRunnerAsync();
                 }
             }
             finally

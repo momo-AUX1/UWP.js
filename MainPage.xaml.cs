@@ -159,7 +159,7 @@ namespace UWP.js
             PostEvent(e.Visible ? "resume" : "pause", new { });
             if (!e.Visible)
             {
-                var _ = RegisterConfiguredBackgroundRunnerAsync();
+                var _ = RegisterConfiguredScriptRunnerAsync();
             }
         }
 
@@ -632,16 +632,16 @@ namespace UWP.js
             }
         }
 
-        public async Task DispatchConfiguredBackgroundRunnerAsync(string taskName)
+        public async Task DispatchConfiguredScriptRunnerAsync(string taskName)
         {
             var uwpNativeMethods = new UwpNativeMethods(_coreWebView2, this);
-            await uwpNativeMethods.DispatchConfiguredBackgroundRunnerAsync(taskName);
+            await uwpNativeMethods.DispatchConfiguredScriptRunnerAsync(taskName);
         }
 
-        public async Task RegisterConfiguredBackgroundRunnerAsync()
+        public async Task RegisterConfiguredScriptRunnerAsync()
         {
             var uwpNativeMethods = new UwpNativeMethods(_coreWebView2, this);
-            await uwpNativeMethods.RegisterSavedBackgroundRunnerAsync();
+            await uwpNativeMethods.RegisterSavedScriptRunnerAsync();
         }
 
         private static string GetObjectString(Dictionary<string, object> map, string key)
@@ -734,9 +734,9 @@ namespace UWP.js
             private static string downloadLocation = null;
             private bool isCursorHidden = false;
             public CoreCursor hiddenCursor;
-            private const string SecureResourcePrefix = "capacitor-xbox";
-            private const string BackgroundRunnerSettingsPrefix = "CapacitorBackgroundRunner:";
-            private const string BackgroundRunnerTaskPrefix = "CapacitorBackgroundRunner.";
+            private const string SecureResourcePrefix = "uwp-js-secure";
+            private const string ScriptRunnerSettingsPrefix = "UwpScriptRunner:";
+            private const string ScriptRunnerTaskPrefix = "UwpScriptRunner.";
             private static readonly Dictionary<string, GeoWatchRegistration> GeoWatches = new Dictionary<string, GeoWatchRegistration>();
             private static Accelerometer _accelerometer;
             private static Inclinometer _inclinometer;
@@ -2038,11 +2038,11 @@ namespace UWP.js
             public Task<string> getDeviceId()
             {
                 var settings = ApplicationData.Current.LocalSettings;
-                var id = settings.Values["capacitor_xbox_device_id"] as string;
+                var id = settings.Values["uwp_js_device_id"] as string;
                 if (string.IsNullOrEmpty(id))
                 {
                     id = Guid.NewGuid().ToString();
-                    settings.Values["capacitor_xbox_device_id"] = id;
+                    settings.Values["uwp_js_device_id"] = id;
                 }
                 return Task.FromResult(Ok(new { identifier = id }));
             }
@@ -3305,7 +3305,7 @@ namespace UWP.js
                 }
             }
 
-            public Task<string> checkBackgroundRunnerPermissions()
+            public Task<string> checkBackgroundScriptPermissions()
             {
                 return Task.FromResult(Ok(new
                 {
@@ -3314,7 +3314,7 @@ namespace UWP.js
                 }));
             }
 
-            public async Task<string> requestBackgroundRunnerPermissions(string optionsJson)
+            public async Task<string> requestBackgroundScriptPermissions(string optionsJson)
             {
                 try
                 {
@@ -3339,7 +3339,7 @@ namespace UWP.js
                 }
             }
 
-            public async Task<string> configureBackgroundRunner(string optionsJson)
+            public async Task<string> configureBackgroundScriptRunner(string optionsJson)
             {
                 try
                 {
@@ -3351,7 +3351,7 @@ namespace UWP.js
                     var interval = Math.Max(15, GetInt(options, "interval", 15));
                     var autoStart = GetBool(options, "autoStart", true);
 
-                    SaveBackgroundRunnerConfig(label, src, eventName, repeat, interval, autoStart);
+                    SaveScriptRunnerConfig(label, src, eventName, repeat, interval, autoStart);
                     var registered = false;
                     string access = null;
 
@@ -3361,7 +3361,7 @@ namespace UWP.js
                         access = status.ToString();
                         if (!Window.Current.Visible)
                         {
-                            registered = RegisterBackgroundRunnerTask(label, interval, repeat);
+                            registered = RegisterScriptRunnerTask(label, interval, repeat);
                         }
                     }
 
@@ -3383,13 +3383,13 @@ namespace UWP.js
                 }
             }
 
-            public async Task<string> dispatchBackgroundRunnerEvent(string optionsJson)
+            public async Task<string> dispatchBackgroundScriptEvent(string optionsJson)
             {
                 try
                 {
                     var options = ParseOptions(optionsJson);
                     var label = GetString(options, "label", "default");
-                    var config = GetSavedBackgroundRunnerConfig(label);
+                    var config = GetSavedScriptRunnerConfig(label);
                     var src = GetString(options, "src", GetString(config, "src", "background.js"));
                     var eventName = GetString(options, "event", GetString(config, "event", null));
                     if (string.IsNullOrWhiteSpace(eventName))
@@ -3398,7 +3398,8 @@ namespace UWP.js
                     }
 
                     var detailsJson = GetRawJson(options, "details", "{}");
-                    var result = await RunBackgroundRunnerEventAsync(label, src, eventName, detailsJson);
+                    var bootstrap = GetString(options, "bootstrap", null);
+                    var result = await RunScriptRunnerEventAsync(label, src, eventName, detailsJson, bootstrap);
                     return Ok(result);
                 }
                 catch (Exception ex)
@@ -3407,22 +3408,22 @@ namespace UWP.js
                 }
             }
 
-            private static void SaveBackgroundRunnerConfig(string label, string src, string eventName, bool repeat, int interval, bool autoStart)
+            private static void SaveScriptRunnerConfig(string label, string src, string eventName, bool repeat, int interval, bool autoStart)
             {
                 var settings = ApplicationData.Current.LocalSettings.Values;
-                var prefix = BackgroundRunnerSettingsPrefix + label + ":";
+                var prefix = ScriptRunnerSettingsPrefix + label + ":";
                 settings[prefix + "src"] = src;
                 settings[prefix + "event"] = eventName;
                 settings[prefix + "repeat"] = repeat;
                 settings[prefix + "interval"] = interval;
                 settings[prefix + "autoStart"] = autoStart;
-                settings[BackgroundRunnerSettingsPrefix + "lastLabel"] = label;
+                settings[ScriptRunnerSettingsPrefix + "lastLabel"] = label;
             }
 
-            private static Dictionary<string, JsonElement> GetSavedBackgroundRunnerConfig(string label)
+            private static Dictionary<string, JsonElement> GetSavedScriptRunnerConfig(string label)
             {
                 var settings = ApplicationData.Current.LocalSettings.Values;
-                var prefix = BackgroundRunnerSettingsPrefix + label + ":";
+                var prefix = ScriptRunnerSettingsPrefix + label + ":";
                 var json = JsonSerializer.Serialize(new
                 {
                     src = settings.TryGetValue(prefix + "src", out var src) ? src?.ToString() : null,
@@ -3434,9 +3435,9 @@ namespace UWP.js
                 return ParseOptions(json);
             }
 
-            private static bool RegisterBackgroundRunnerTask(string label, int interval, bool repeat)
+            private static bool RegisterScriptRunnerTask(string label, int interval, bool repeat)
             {
-                var taskName = BackgroundRunnerTaskPrefix + label;
+                var taskName = ScriptRunnerTaskPrefix + label;
                 foreach (var task in BackgroundTaskRegistration.AllTasks)
                 {
                     if (task.Value.Name == taskName)
@@ -3454,42 +3455,42 @@ namespace UWP.js
                 return true;
             }
 
-            public async Task DispatchConfiguredBackgroundRunnerAsync(string taskName)
+            public async Task DispatchConfiguredScriptRunnerAsync(string taskName)
             {
-                var label = (taskName ?? "").StartsWith(BackgroundRunnerTaskPrefix, StringComparison.Ordinal)
-                    ? taskName.Substring(BackgroundRunnerTaskPrefix.Length)
-                    : GetLastBackgroundRunnerLabel();
-                var config = GetSavedBackgroundRunnerConfig(label);
+                var label = (taskName ?? "").StartsWith(ScriptRunnerTaskPrefix, StringComparison.Ordinal)
+                    ? taskName.Substring(ScriptRunnerTaskPrefix.Length)
+                    : GetLastScriptRunnerLabel();
+                var config = GetSavedScriptRunnerConfig(label);
                 var src = GetString(config, "src", "background.js");
                 var eventName = GetString(config, "event", "backgroundRunner");
-                await RunBackgroundRunnerEventAsync(label, src, eventName, "{}");
+                await RunScriptRunnerEventAsync(label, src, eventName, "{}", null);
             }
 
-            public async Task RegisterSavedBackgroundRunnerAsync()
+            public async Task RegisterSavedScriptRunnerAsync()
             {
-                var label = GetLastBackgroundRunnerLabel();
-                var config = GetSavedBackgroundRunnerConfig(label);
+                var label = GetLastScriptRunnerLabel();
+                var config = GetSavedScriptRunnerConfig(label);
                 if (!GetBool(config, "autoStart", false))
                 {
                     return;
                 }
 
                 await BackgroundExecutionManager.RequestAccessAsync();
-                RegisterBackgroundRunnerTask(
+                RegisterScriptRunnerTask(
                     label,
                     Math.Max(15, GetInt(config, "interval", 15)),
                     GetBool(config, "repeat", false));
             }
 
-            private static string GetLastBackgroundRunnerLabel()
+            private static string GetLastScriptRunnerLabel()
             {
                 var settings = ApplicationData.Current.LocalSettings.Values;
-                return settings.TryGetValue(BackgroundRunnerSettingsPrefix + "lastLabel", out var label)
+                return settings.TryGetValue(ScriptRunnerSettingsPrefix + "lastLabel", out var label)
                     ? label?.ToString() ?? "default"
                     : "default";
             }
 
-            private async Task<string> ReadBackgroundRunnerSourceAsync(string src)
+            private async Task<string> ReadScriptRunnerSourceAsync(string src)
             {
                 var folder = await Package.Current.InstalledLocation.GetFolderAsync("Assets");
                 var wp = await folder.GetFolderAsync("WP");
@@ -3500,14 +3501,14 @@ namespace UWP.js
                 if (!fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase))
                 {
-                    throw new UnauthorizedAccessException("Background runner src must stay inside Assets/WP.");
+                    throw new UnauthorizedAccessException("Script runner src must stay inside Assets/WP.");
                 }
                 return await File.ReadAllTextAsync(fullPath);
             }
 
-            private async Task<object> RunBackgroundRunnerEventAsync(string label, string src, string eventName, string detailsJson)
+            private async Task<object> RunScriptRunnerEventAsync(string label, string src, string eventName, string detailsJson, string bootstrapSource)
             {
-                var runnerSource = await ReadBackgroundRunnerSourceAsync(src);
+                var runnerSource = await ReadScriptRunnerSourceAsync(src);
                 object result = null;
 
                 await _mainPage.RunOnUiThreadAsync(async () =>
@@ -3530,7 +3531,7 @@ namespace UWP.js
                             using (var document = JsonDocument.Parse(message))
                             {
                                 var root = document.RootElement;
-                                if (!root.TryGetProperty("source", out var sourceProp) || sourceProp.GetString() != "CapacitorBackgroundRunner")
+                                if (!root.TryGetProperty("source", out var sourceProp) || sourceProp.GetString() != "UwpScriptRunner")
                                 {
                                     return;
                                 }
@@ -3572,21 +3573,25 @@ namespace UWP.js
                         await Task.WhenAny(navigationTcs.Task, Task.Delay(5000));
                         webView.CoreWebView2.NavigationCompleted -= navigationHandler;
 
-                        await webView.CoreWebView2.ExecuteScriptAsync(BuildBackgroundRunnerBootstrapScript());
+                        await webView.CoreWebView2.ExecuteScriptAsync(BuildScriptRunnerBootstrapScript());
+                        if (!string.IsNullOrWhiteSpace(bootstrapSource))
+                        {
+                            await webView.CoreWebView2.ExecuteScriptAsync(bootstrapSource);
+                        }
                         await webView.CoreWebView2.ExecuteScriptAsync(runnerSource);
-                        await webView.CoreWebView2.ExecuteScriptAsync(BuildBackgroundRunnerDispatchScript(label, eventName, detailsJson));
+                        await webView.CoreWebView2.ExecuteScriptAsync(BuildScriptRunnerDispatchScript(label, eventName, detailsJson));
 
                         var completed = await Task.WhenAny(tcs.Task, Task.Delay(30000));
                         if (completed != tcs.Task)
                         {
-                            throw new TimeoutException("Background runner timed out waiting for resolve() or reject().");
+                            throw new TimeoutException("Script runner timed out waiting for resolve() or reject().");
                         }
 
                         var message = await tcs.Task;
                         var type = message.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : "";
                         if (type == "reject")
                         {
-                            var error = message.TryGetProperty("error", out var errorProp) ? errorProp.ToString() : "Background runner rejected.";
+                            var error = message.TryGetProperty("error", out var errorProp) ? errorProp.ToString() : "Script runner rejected.";
                             throw new Exception(error);
                         }
                         result = message.TryGetProperty("data", out var dataProp)
@@ -3606,13 +3611,13 @@ namespace UWP.js
                 return result;
             }
 
-            private static string BuildBackgroundRunnerBootstrapScript()
+            private static string BuildScriptRunnerBootstrapScript()
             {
                 return @"
 (() => {
   const nativeAddEventListener = window.addEventListener.bind(window);
   const listeners = new Map();
-  const send = (message) => chrome.webview.postMessage(JSON.stringify({ source: 'CapacitorBackgroundRunner', ...message }));
+  const send = (message) => chrome.webview.postMessage(JSON.stringify({ source: 'UwpScriptRunner', ...message }));
   window.addEventListener = (eventName, callback) => {
     if (typeof callback === 'function') {
       const list = listeners.get(eventName) || [];
@@ -3622,10 +3627,10 @@ namespace UWP.js
     }
     return nativeAddEventListener(eventName, callback);
   };
-  window.__uwpDispatchBackgroundRunnerEvent = (eventName, details) => new Promise((resolve, reject) => {
+  window.__uwpDispatchScriptRunnerEvent = (eventName, details) => new Promise((resolve, reject) => {
     const handler = (listeners.get(eventName) || [])[0];
     if (!handler) {
-      reject(new Error(`No background runner listener registered for '${eventName}'.`));
+      reject(new Error(`No script runner listener registered for '${eventName}'.`));
       return;
     }
     let settled = false;
@@ -3645,12 +3650,12 @@ namespace UWP.js
       fail(error);
     }
   });
-  window.CapacitorKV = {
+  window.UwpScriptStorage = {
     set: (key, value) => localStorage.setItem(String(key), String(value)),
     get: (key) => ({ value: localStorage.getItem(String(key)) }),
     remove: (key) => localStorage.removeItem(String(key)),
   };
-  window.CapacitorDevice = {
+  window.UwpScriptDevice = {
     getNetworkStatus: () => ({ connected: navigator.onLine, connectionType: navigator.onLine ? 'unknown' : 'none' }),
     getBatteryStatus: async () => {
       if (navigator.getBattery) {
@@ -3660,7 +3665,7 @@ namespace UWP.js
       return { batteryLevel: null, isCharging: false };
     },
   };
-  window.CapacitorNotifications = {
+  window.UwpScriptNotifications = {
     schedule: (notifications) => send({ type: 'notification', data: notifications }),
     setBadge: () => {},
     clearBadge: () => {},
@@ -3669,7 +3674,7 @@ namespace UWP.js
 ";
             }
 
-            private static string BuildBackgroundRunnerDispatchScript(string label, string eventName, string detailsJson)
+            private static string BuildScriptRunnerDispatchScript(string label, string eventName, string detailsJson)
             {
                 var labelJson = JsonSerializer.Serialize(label ?? "default");
                 var eventJson = JsonSerializer.Serialize(eventName);
@@ -3680,10 +3685,10 @@ namespace UWP.js
                 return $@"
 (async () => {{
   try {{
-    const value = await window.__uwpDispatchBackgroundRunnerEvent({eventJson}, {detailsJson});
-    chrome.webview.postMessage(JSON.stringify({{ source: 'CapacitorBackgroundRunner', type: 'resolve', label: {labelJson}, data: value === undefined ? null : value }}));
+    const value = await window.__uwpDispatchScriptRunnerEvent({eventJson}, {detailsJson});
+    chrome.webview.postMessage(JSON.stringify({{ source: 'UwpScriptRunner', type: 'resolve', label: {labelJson}, data: value === undefined ? null : value }}));
   }} catch (error) {{
-    chrome.webview.postMessage(JSON.stringify({{ source: 'CapacitorBackgroundRunner', type: 'reject', label: {labelJson}, error: error && (error.message || String(error)) }}));
+    chrome.webview.postMessage(JSON.stringify({{ source: 'UwpScriptRunner', type: 'reject', label: {labelJson}, error: error && (error.message || String(error)) }}));
   }}
 }})();
 ";
