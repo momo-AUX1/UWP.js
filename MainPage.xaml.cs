@@ -62,6 +62,7 @@ namespace UWP.js
         private DataTransferManager _dataTransferManager;
         private Dictionary<string, object> _pendingShareData;
         private bool _backButtonHandlerEnabled = true;
+        private bool _cursorHidden = true;
         public static MainPage Current { get; private set; }
 
         public MainPage()
@@ -89,9 +90,33 @@ namespace UWP.js
                 };
                 _gamepadSubscribed = true;
             }
+
+            RegisterPointerCursorHandlers();
+            SetPointerCursorHidden(true);
         }
 
         public Gamepad CurrentGamepad => _currentGamepad;
+
+        public void SetPointerCursorHidden(bool hidden)
+        {
+            _cursorHidden = hidden;
+            ApplyPointerCursor();
+        }
+
+        private void RegisterPointerCursorHandlers()
+        {
+            Window.Current.Activated += (s, e) => ApplyPointerCursor();
+            Window.Current.CoreWindow.PointerMoved += (s, e) => ApplyPointerCursor();
+            Window.Current.CoreWindow.PointerEntered += (s, e) => ApplyPointerCursor();
+            Window.Current.CoreWindow.PointerExited += (s, e) => ApplyPointerCursor();
+        }
+
+        private void ApplyPointerCursor()
+        {
+            Window.Current.CoreWindow.PointerCursor = _cursorHidden
+                ? null
+                : new CoreCursor(CoreCursorType.Arrow, 0);
+        }
 
         public void SetCustomHeaders(Dictionary<string, string> headers)
         {
@@ -732,8 +757,6 @@ namespace UWP.js
             private readonly MainPage _mainPage;
             private readonly Dictionary<string, MethodInfo> _methods;
             private static string downloadLocation = null;
-            private bool isCursorHidden = false;
-            public CoreCursor hiddenCursor;
             private const string SecureResourcePrefix = "uwp-js-secure";
             private const string ScriptRunnerSettingsPrefix = "UwpScriptRunner:";
             private const string ScriptRunnerTaskPrefix = "UwpScriptRunner.";
@@ -758,7 +781,6 @@ namespace UWP.js
                 _mainPage = mainPage;
                 _methods = typeof(UwpNativeMethods).GetMethods(BindingFlags.Public | BindingFlags.Instance)
                                                    .ToDictionary(m => m.Name, m => m);
-                hiddenCursor = new CoreCursor(CoreCursorType.Custom, 101);
             }
 
             public async Task<string> CallNativeMethodAsync(string methodName, params object[] args)
@@ -1499,8 +1521,6 @@ namespace UWP.js
             {
                 try
                 {
-                    Window.Current.CoreWindow.PointerCursor = null;
-
                     await _coreWebView2.ExecuteScriptAsync(@"
                         document.querySelector('body').style.cursor = 'none';
                         document.body.requestPointerLock = document.body.requestPointerLock ||
@@ -1512,10 +1532,10 @@ namespace UWP.js
 
                     await _mainPage.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
                     {
+                        _mainPage.SetPointerCursorHidden(true);
                         _mainPage.WebView2.Focus(FocusState.Programmatic);
                     });
 
-                    isCursorHidden = true;
                     return JsonSerializer.Serialize(new { completed = true, data = "hidden" });
                 }
                 catch (Exception ex)
@@ -1528,7 +1548,6 @@ namespace UWP.js
             {
                 try
                 {
-                    Window.Current.CoreWindow.PointerCursor = new CoreCursor(CoreCursorType.Arrow, 0);
                     await _coreWebView2.ExecuteScriptAsync(@"
                           document.querySelector('body').style.cursor = 'default';
                           if (document.pointerLockElement) {
@@ -1544,10 +1563,10 @@ namespace UWP.js
 
                     await _mainPage.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
                     {
+                        _mainPage.SetPointerCursorHidden(false);
                         FocusManager.TryMoveFocus(FocusNavigationDirection.Next);
                     });
 
-                    isCursorHidden = false;
                     return JsonSerializer.Serialize(new { completed = true, data = "visible" });
                 }
                 catch (Exception ex)
