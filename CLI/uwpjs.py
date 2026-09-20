@@ -139,7 +139,7 @@ def initialize_uwpjs():
         os.remove("UWP.js.zip")
 
     project_files = ["App.xaml.cs", "App.xaml", "MainPage.xaml.cs", "MainPage.xaml",
-                     "UWP.js.csproj", "EdgeHtmlWebView.cs", "Package.appxmanifest",
+                     "UWP.js.csproj", "EdgeHtmlWebView.cs", "ArmJson.cs", "Package.appxmanifest",
                      "Package.arm.appxmanifest"]
     os.mkdir(project_name)
     for name in project_files:

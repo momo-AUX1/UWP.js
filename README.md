@@ -17,7 +17,7 @@ UWP.js is a powerful framework that bridges the gap between modern web applicati
 
 UWP.js lets you run web apps inside a UWP (Universal Windows Platform) environment, enabling communication between JavaScript and C#. The ARM32 configuration uses Windows 10 Mobile's EdgeHTML WebView; the other configurations retain WebView2.
 
-For a Lumia, select the solution's `ARM` configuration. It targets Windows 10 build 15063, excludes the WebView2 and WinUI packages, and adapts the existing C# bridge's navigation, messages, script execution, browser overlay, and background runner to the OS WebView. The Python CLI copies this repository's template and installs `edgehtml-bridge.js` before app scripts on each sync. EdgeHTML cannot provide WebView2 virtual HTTP mappings for arbitrary picker folders; package assets use `ms-appx-web` and LocalState URLs use `ms-appdata`. Apps must supply JavaScript and CSS compatible with EdgeHTML.
+For a Lumia, select the solution's `ARM` configuration. It targets Windows 10 build 15063, excludes the WebView2 and WinUI packages, and uses Json.NET for the ARM-only JSON adapter because System.Text.Json 9 cannot restore for that UAP version. The existing C# bridge's navigation, messages, script execution, browser overlay, and background runner use the OS WebView. The Python CLI copies this repository's template and installs `edgehtml-bridge.js` before app scripts on each sync. EdgeHTML cannot provide WebView2 virtual HTTP mappings for arbitrary picker folders; package assets use `ms-appx-web` and LocalState URLs use `ms-appdata`. Apps must supply JavaScript and CSS compatible with EdgeHTML.
 
 ---
 
