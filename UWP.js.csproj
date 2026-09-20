@@ -11,8 +11,10 @@
     <AssemblyName>UWP.js</AssemblyName>
     <DefaultLanguage>en-US</DefaultLanguage>
     <TargetPlatformIdentifier>UAP</TargetPlatformIdentifier>
-    <TargetPlatformVersion Condition=" '$(TargetPlatformVersion)' == '' ">10.0.26100.0</TargetPlatformVersion>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <TargetPlatformVersion Condition=" '$(TargetPlatformVersion)' == '' and '$(Platform)' != 'ARM' ">10.0.26100.0</TargetPlatformVersion>
+    <TargetPlatformVersion Condition=" '$(TargetPlatformVersion)' == '' and '$(Platform)' == 'ARM' ">10.0.19041.0</TargetPlatformVersion>
+    <TargetPlatformMinVersion Condition="'$(Platform)' != 'ARM'">10.0.17763.0</TargetPlatformMinVersion>
+    <TargetPlatformMinVersion Condition="'$(Platform)' == 'ARM'">10.0.15063.0</TargetPlatformMinVersion>
     <MinimumVisualStudioVersion>14</MinimumVisualStudioVersion>
     <FileAlignment>512</FileAlignment>
     <ProjectTypeGuids>{A5A43C5B-DE2A-4C0C-9213-0A381AF9435A};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
@@ -45,7 +47,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|ARM'">
     <DebugSymbols>true</DebugSymbols>
     <OutputPath>bin\ARM\Debug\</OutputPath>
-    <DefineConstants>DEBUG;TRACE;NETFX_CORE;WINDOWS_UWP</DefineConstants>
+    <DefineConstants>DEBUG;TRACE;NETFX_CORE;WINDOWS_UWP;EDGEHTML_ARM</DefineConstants>
     <NoWarn>;2008</NoWarn>
     <DebugType>full</DebugType>
     <PlatformTarget>ARM</PlatformTarget>
@@ -55,7 +57,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|ARM'">
     <OutputPath>bin\ARM\Release\</OutputPath>
-    <DefineConstants>TRACE;NETFX_CORE;WINDOWS_UWP</DefineConstants>
+    <DefineConstants>TRACE;NETFX_CORE;WINDOWS_UWP;EDGEHTML_ARM</DefineConstants>
     <Optimize>true</Optimize>
     <NoWarn>;2008</NoWarn>
     <DebugType>pdbonly</DebugType>
@@ -122,10 +124,14 @@
     <Compile Include="MainPage.xaml.cs">
       <DependentUpon>MainPage.xaml</DependentUpon>
     </Compile>
+    <Compile Include="EdgeHtmlWebView.cs" Condition="'$(Platform)' == 'ARM'" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <AppxManifest Include="Package.appxmanifest">
+    <AppxManifest Include="Package.appxmanifest" Condition="'$(Platform)' != 'ARM'">
+      <SubType>Designer</SubType>
+    </AppxManifest>
+    <AppxManifest Include="Package.arm.appxmanifest" Condition="'$(Platform)' == 'ARM'">
       <SubType>Designer</SubType>
     </AppxManifest>
   </ItemGroup>
@@ -157,10 +163,10 @@
     <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications">
       <Version>7.1.3</Version>
     </PackageReference>
-    <PackageReference Include="Microsoft.UI.Xaml">
+    <PackageReference Include="Microsoft.UI.Xaml" Condition="'$(Platform)' != 'ARM'">
       <Version>2.8.6</Version>
     </PackageReference>
-    <PackageReference Include="Microsoft.Web.WebView2">
+    <PackageReference Include="Microsoft.Web.WebView2" Condition="'$(Platform)' != 'ARM'">
       <Version>1.0.2903.40</Version>
     </PackageReference>
     <PackageReference Include="System.Text.Json">

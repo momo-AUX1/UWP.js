@@ -70,6 +70,7 @@ def is_valid_aspect_ratio(width, height, target_ratio=2.067, tolerance=1.5):
 
 def initialize_uwpjs():
     files = os.listdir('.')
+    template_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     global isSPA, spaDATA, isCapacitor, capDATA, current_web_dir, resources_dir
 
@@ -126,29 +127,29 @@ def initialize_uwpjs():
             }
         }, indent=2))
 
-    print(Fore.GREEN + "🚀 Downloading UWP.js template...")
+    print(Fore.GREEN + "🚀 Preparing UWP.js template...")
     if not os.path.exists("uwp"):
         os.mkdir("uwp")
     os.chdir("uwp")
-    wget.download("https://git.nanodata.cloud/moonpower/uwpjs/raw/branch/main/UWP.js.zip", out="UWP.js.zip")
-    print("\n" + Fore.GREEN + "🎉 Download complete!")
+    if not os.path.isfile(os.path.join(template_root, "EdgeHtmlWebView.cs")):
+        wget.download("https://github.com/momo-AUX1/UWP.js/archive/refs/heads/main.zip", out="UWP.js.zip")
+        with zipfile.ZipFile("UWP.js.zip", "r") as zip_ref:
+            zip_ref.extractall(".")
+        template_root = os.path.abspath("UWP.js-main")
+        os.remove("UWP.js.zip")
 
-    print(Fore.GREEN + "🔧 Extracting UWP.js template...")
-    with zipfile.ZipFile("UWP.js.zip", "r") as zip_ref:
-        zip_ref.extractall(".")
-    os.remove("UWP.js.zip")
-
-    if os.path.exists("UWP.js") and os.path.isdir("UWP.js"):
-        os.rename("UWP.js", project_name)
-
-    root_sln = "UWP.js.sln"
+    project_files = ["App.xaml.cs", "App.xaml", "MainPage.xaml.cs", "MainPage.xaml",
+                     "UWP.js.csproj", "EdgeHtmlWebView.cs", "Package.appxmanifest",
+                     "Package.arm.appxmanifest"]
+    os.mkdir(project_name)
+    for name in project_files:
+        shutil.copy2(os.path.join(template_root, name), os.path.join(project_name, name))
+    for name in ["Assets", "Properties"]:
+        shutil.copytree(os.path.join(template_root, name), os.path.join(project_name, name))
     new_root_sln = f"{project_name}.sln"
-    if os.path.exists(root_sln):
-        os.rename(root_sln, new_root_sln)
-
-    csproj_path = os.path.join(project_name, "UWP.js.csproj")
-    if os.path.exists(csproj_path):
-        os.rename(csproj_path, os.path.join(project_name, f"{project_name}.csproj"))
+    shutil.copy2(os.path.join(template_root, "uwpjs.sln"), new_root_sln)
+    os.rename(os.path.join(project_name, "UWP.js.csproj"),
+              os.path.join(project_name, f"{project_name}.csproj"))
 
     if os.path.exists(new_root_sln):
         with open(new_root_sln, 'r', encoding='utf-8', errors='ignore') as f:
@@ -273,6 +274,10 @@ def sync_project():
 
     print(Fore.GREEN + f"🚀 Syncing build directory '{build_dir}' to 'uwp/{project_name}/Assets/WP'...")
 
+    bridge_path = os.path.join(uwp_assets_wp_dir, "edgehtml-bridge.js")
+    with open(bridge_path, "rb") as bridge_file:
+        bridge_script = bridge_file.read()
+
     for root, dirs, files in os.walk(uwp_assets_wp_dir):
         for file in files:
             try:
@@ -299,6 +304,19 @@ def sync_project():
     else:
         print(Fore.RED + f"❌ '{build_dir}' is not a directory.")
         sys.exit(1)
+
+    with open(bridge_path, "wb") as bridge_file:
+        bridge_file.write(bridge_script)
+    index_path = os.path.join(uwp_assets_wp_dir, "index.html")
+    if os.path.isfile(index_path):
+        with open(index_path, "r", encoding="utf-8") as index_file:
+            html = index_file.read()
+        if "edgehtml-bridge.js" not in html:
+            tag = '<script src="./edgehtml-bridge.js"></script>'
+            match = re.search(r"<head[^>]*>", html, re.IGNORECASE)
+            html = html[:match.end()] + tag + html[match.end():] if match else tag + html
+            with open(index_path, "w", encoding="utf-8") as index_file:
+                index_file.write(html)
 
     images = {
         "LockScreenLogo.scale-200.png": (48, 48),
