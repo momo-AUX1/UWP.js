@@ -155,6 +155,7 @@ def initialize_uwpjs():
         with open(new_root_sln, 'r', encoding='utf-8', errors='ignore') as f:
             sln_content = f.read()
         sln_content = sln_content.replace("UWP.js\\UWP.js.csproj", f"{project_name}\\{project_name}.csproj")
+        sln_content = sln_content.replace('"UWP.js.csproj"', f'"{project_name}\\{project_name}.csproj"')
         sln_content = sln_content.replace("UWP.js.sln", f"{project_name}.sln")
         sln_content = sln_content.replace("UWP.js", project_name)
         with open(new_root_sln, 'w', encoding='utf-8', errors='ignore') as f:
